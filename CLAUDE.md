@@ -37,8 +37,14 @@ Pour itérer sur le code, `npm run dev` en natif contre le Postgres du compose (
 db`). Le `.env` pointe sur `localhost:5433` pour ce cas ; le compose surcharge `DATABASE_URL` vers le
 service `db` pour les conteneurs. Les deux modes coexistent.
 
-Le `Dockerfile` a deux cibles : `runner` (sortie autonome Next, ce qui tourne en prod) et `outils`
-(sources + `node_modules` complet). Les scripts et `drizzle-kit` **ne sont pas** dans la sortie
+⚠️ La sortie autonome de Next (`output: "standalone"`) n'est activée que par
+`NEXT_SORTIE_AUTONOME=1`, posé dans le `Dockerfile`. **Ne jamais l'activer inconditionnellement** :
+Vercel fait son propre traçage de fichiers après le build et les deux se marchent dessus. Le build
+réussit puis l'empaquetage échoue sur `ENOENT: .next/next-server.js.nft.json`, ce qui envoie
+chercher le problème au mauvais endroit.
+
+Le `Dockerfile` a deux cibles : `runner` (sortie autonome Next, ce qui tourne dans le conteneur) et
+`outils` (sources + `node_modules` complet). Les scripts et `drizzle-kit` **ne sont pas** dans la sortie
 autonome, d'où la seconde cible — c'est elle qui exécute migrations, seed et CLI :
 `docker compose run --rm outils node scripts/cron.ts --date 2026-09-10`.
 

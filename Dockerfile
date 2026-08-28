@@ -34,6 +34,10 @@ COPY . .
 # est differee au premier acces, justement pour que l'image se construise sans
 # base disponible.
 ENV NEXT_TELEMETRY_DISABLED=1
+# Sortie autonome : utile ici pour n'embarquer que le serveur et ses modules
+# traces. Activee uniquement dans l'image, jamais sur Vercel, qui fait son
+# propre tracage et echouerait a l'empaquetage.
+ENV NEXT_SORTIE_AUTONOME=1
 RUN npm run build
 
 # ---------------------------------------------------------------------------

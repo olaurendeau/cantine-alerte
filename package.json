@@ -6,7 +6,7 @@
   "description": "Alerte les parents quand une reservation de cantine n'a pas ete faite avant l'echeance du portail 3D Ouest.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.18"
+    "node": "22.x || 24.x"
   },
   "scripts": {
     "dev": "next dev",
