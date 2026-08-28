@@ -181,6 +181,56 @@ Pour tester sans attendre :
 curl -H "Authorization: Bearer $CRON_SECRET" https://votre-app.vercel.app/api/cron
 ```
 
+## Configurer l'envoi de mails (Brevo)
+
+En développement, rien à faire : `MAIL_PROVIDER=console` affiche les mails dans le terminal. Brevo
+n'est nécessaire que pour envoyer réellement.
+
+**1. Créer un compte** sur brevo.com. Le plan gratuit couvre 300 mails par jour — largement au-delà
+du besoin, un foyer recevant au plus un message par jour de rappel choisi.
+
+**2. Authentifier votre domaine** (Paramètres → Expéditeurs, domaines & IPs dédiées). Vous ajoutez
+un code Brevo, un enregistrement DKIM et un DMARC dans votre DNS. Une fois le domaine authentifié,
+tous les expéditeurs de ce domaine sont validés d'office.
+
+⚠️ **N'utilisez pas une adresse Gmail/Free/Orange comme `MAIL_EXPEDITEUR`.** Si l'adresse
+d'expédition est sur un domaine gratuit ou non authentifié, Brevo **remplace votre adresse** par une
+adresse générique conforme. Le parent reçoit alors un mail d'un expéditeur qu'il ne reconnaît pas —
+la première réaction est de le marquer comme spam, ce qui dégrade la délivrabilité de tous les
+suivants. C'est le piège numéro un.
+
+**3. À défaut de domaine**, créer un expéditeur unique (Paramètres → Expéditeurs) et le valider avec
+le code à 6 chiffres reçu par mail. Utilisable pour tester, mais l'avertissement ci-dessus
+s'applique.
+
+**4. Créer une clé API** dans les paramètres du compte, section SMTP & API → clés API. C'est une clé
+**API v3**, pas une clé SMTP : l'application appelle `api.brevo.com/v3/smtp/email` avec l'en-tête
+`api-key`.
+
+**5. Renseigner l'environnement** :
+
+```bash
+MAIL_PROVIDER=brevo
+BREVO_API_KEY=xkeysib-...
+MAIL_EXPEDITEUR=cantine@votre-domaine.fr    # doit être validé côté Brevo
+MAIL_EXPEDITEUR_NOM=Alerte cantine
+```
+
+**6. Vérifier** sans attendre un rappel :
+
+```bash
+node scripts/tester-mail.ts vous@exemple.fr
+docker compose run --rm outils node scripts/tester-mail.ts vous@exemple.fr
+```
+
+Le script affiche le fournisseur et l'expéditeur utilisés, puis traduit les échecs courants : un 401
+désigne la clé, un 400 mentionnant `sender` désigne un expéditeur non validé.
+
+Un mail est envoyé **par destinataire** plutôt qu'un seul à plusieurs adresses : sinon les
+destinataires d'un même foyer se verraient mutuellement dans le champ `À`, ce qui n'est pas
+souhaitable dès qu'on y ajoute un grand-parent ou une nounou. Une adresse invalide n'empêche pas les
+autres de recevoir leur rappel.
+
 ## Sécurité et vie privée
 
 Le service stocke le mot de passe du portail de chaque famille, chiffré en AES-256-GCM. La clé

@@ -12,25 +12,46 @@ export async function envoyerBrevo(message: Message): Promise<void> {
   if (!cle) throw new Error("BREVO_API_KEY manquante (MAIL_PROVIDER=brevo)");
   if (!expediteur) throw new Error("MAIL_EXPEDITEUR manquante (MAIL_PROVIDER=brevo)");
 
-  const res = await fetch(API, {
-    method: "POST",
-    headers: {
-      "api-key": cle,
-      "content-type": "application/json",
-      accept: "application/json",
-    },
-    body: JSON.stringify({
-      sender: { email: expediteur, name: process.env.MAIL_EXPEDITEUR_NOM ?? "Alerte cantine" },
-      // Chaque parent recoit un message qui lui est adresse, sans voir les
-      // autres adresses du foyer : Brevo separe les envois de `to`.
-      to: message.destinataires.map((email) => ({ email })),
-      subject: message.objet,
-      textContent: message.corps,
-    }),
-  });
+  const sender = {
+    email: expediteur,
+    name: process.env.MAIL_EXPEDITEUR_NOM ?? "Alerte cantine",
+  };
 
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Brevo HTTP ${res.status} : ${detail.slice(0, 300)}`);
+  // Un appel par destinataire : passer plusieurs adresses dans `to` produit un
+  // seul message ou elles se voient mutuellement. Un foyer peut ajouter un
+  // grand-parent ou une nounou, qui n'ont pas a decouvrir les adresses des
+  // autres. Le cout tient largement dans le quota gratuit (300 mails/jour).
+  const echecs: string[] = [];
+  for (const destinataire of message.destinataires) {
+    try {
+      const res = await fetch(API, {
+        method: "POST",
+        headers: {
+          "api-key": cle,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          sender,
+          to: [{ email: destinataire }],
+          subject: message.objet,
+          textContent: message.corps,
+        }),
+      });
+      if (!res.ok) {
+        echecs.push(`${destinataire} : HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+      }
+    } catch (e) {
+      echecs.push(`${destinataire} : ${(e as Error).message}`);
+    }
+  }
+
+  // On tente toutes les adresses avant d'echouer : une adresse invalide ne doit
+  // pas priver le reste du foyer de son rappel.
+  if (echecs.length === message.destinataires.length) {
+    throw new Error(`Brevo : aucun envoi n'a abouti. ${echecs.join(" | ")}`);
+  }
+  if (echecs.length) {
+    console.error(`[mail] envois partiels, ${echecs.length} echec(s) : ${echecs.join(" | ")}`);
   }
 }
