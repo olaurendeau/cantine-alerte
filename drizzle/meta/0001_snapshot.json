@@ -1,0 +1,380 @@
+{
+  "id": "a15eeb73-89e9-4138-a46e-a5194b3ad34d",
+  "prevId": "aaadf4a5-973b-42c6-ae57-8bd02b598b1c",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.destinataires": {
+      "name": "destinataires",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ajoute_le": {
+          "name": "ajoute_le",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "destinataires_parent_id_parents_id_fk": {
+          "name": "destinataires_parent_id_parents_id_fk",
+          "tableFrom": "destinataires",
+          "tableTo": "parents",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "destinataire_unique": {
+          "name": "destinataire_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "parent_id",
+            "email"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.envois": {
+      "name": "envois",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "semaine_visee": {
+          "name": "semaine_visee",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "jours_avant": {
+          "name": "jours_avant",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'rappel'"
+        },
+        "envoye_le": {
+          "name": "envoye_le",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "envois_parent_id_parents_id_fk": {
+          "name": "envois_parent_id_parents_id_fk",
+          "tableFrom": "envois",
+          "tableTo": "parents",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "envoi_unique": {
+          "name": "envoi_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "parent_id",
+            "semaine_visee",
+            "jours_avant"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.identifiants_portail": {
+      "name": "identifiants_portail",
+      "schema": "",
+      "columns": {
+        "parent_id": {
+          "name": "parent_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "portail_email": {
+          "name": "portail_email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mdp_chiffre": {
+          "name": "mdp_chiffre",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cle_version": {
+          "name": "cle_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "verifie_le": {
+          "name": "verifie_le",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "echecs_consecutifs": {
+          "name": "echecs_consecutifs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "derniere_erreur": {
+          "name": "derniere_erreur",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "alerte_echec_le": {
+          "name": "alerte_echec_le",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "identifiants_portail_parent_id_parents_id_fk": {
+          "name": "identifiants_portail_parent_id_parents_id_fk",
+          "tableFrom": "identifiants_portail",
+          "tableTo": "parents",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.liens_magiques": {
+      "name": "liens_magiques",
+      "schema": "",
+      "columns": {
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expire_le": {
+          "name": "expire_le",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "utilise_le": {
+          "name": "utilise_le",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "liens_magiques_parent_id_parents_id_fk": {
+          "name": "liens_magiques_parent_id_parents_id_fk",
+          "tableFrom": "liens_magiques",
+          "tableTo": "parents",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.parents": {
+      "name": "parents",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cree_le": {
+          "name": "cree_le",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "actif": {
+          "name": "actif",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "parents_email_unique": {
+          "name": "parents_email_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "email"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.rappels": {
+      "name": "rappels",
+      "schema": "",
+      "columns": {
+        "parent_id": {
+          "name": "parent_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "jours_avant": {
+          "name": "jours_avant",
+          "type": "integer[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{1}'"
+        },
+        "jours_silencieux": {
+          "name": "jours_silencieux",
+          "type": "integer[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "rappels_parent_id_parents_id_fk": {
+          "name": "rappels_parent_id_parents_id_fk",
+          "tableFrom": "rappels",
+          "tableTo": "parents",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

@@ -1,0 +1,23 @@
+# Secrets : .env contient les identifiants portail et la cle de chiffrement.
+# Ce depot est destine a etre publie, ne jamais lever cette ligne.
+.env
+.env.local
+.env.*.local
+
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+.vercel/
+
+# Sortie des dumps de diagnostic (--dump), contient des donnees personnelles
+*.dump.json
+
+# Captures du portail : elles montrent les nom et prenoms d'enfants mineurs
+# ainsi que la commune. Ce depot etant public, elles restent en local.
+# Pour les publier, il faut d'abord masquer les identites.
+docs/screenshots-ui/
+
+.DS_Store
+*.log

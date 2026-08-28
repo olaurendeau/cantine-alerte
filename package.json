@@ -1,0 +1,37 @@
+{
+  "name": "cantine-alerte",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Alerte les parents quand une reservation de cantine n'a pas ete faite avant l'echeance du portail 3D Ouest.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "verifier": "node scripts/verifier.ts",
+    "db:generer": "drizzle-kit generate",
+    "db:migrer": "node scripts/migrer.ts",
+    "db:pousser": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.3.3",
+    "postgres": "^3.4.9",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.9.0"
+  }
+}

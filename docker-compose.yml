@@ -1,0 +1,83 @@
+# Stack complete en local : Postgres, migrations, application.
+#
+#   docker compose up --build          tout monter (http://localhost:3000)
+#   docker compose run --rm outils node scripts/seed.ts --rappels 0,1,4
+#   docker compose run --rm outils node scripts/cron.ts --date 2026-09-10
+#
+# En production : Neon pour la base, Vercel pour l'application.
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: cantine-db
+    environment:
+      POSTGRES_USER: cantine
+      POSTGRES_PASSWORD: cantine
+      POSTGRES_DB: cantine
+    ports:
+      # 5433 cote hote pour ne pas entrer en conflit avec un Postgres deja
+      # installe, et pour que `npm run dev` en natif puisse s'y connecter.
+      - "5433:5432"
+    volumes:
+      - donnees:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cantine -d cantine"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Applique les migrations puis sort. L'application attend sa reussite, ce qui
+  # evite de demarrer sur une base sans tables.
+  migrations:
+    build:
+      context: .
+      target: outils
+    # Image nommee et partagee avec le service `outils`. Sans cela, `outils`
+    # etant dans un profil, `docker compose up --build` ne le reconstruirait
+    # pas et on testerait avec du code perime sans s'en apercevoir.
+    image: cantine-alerte-outils
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://cantine:cantine@db:5432/cantine
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: runner
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      # Depuis un conteneur, la base n'est pas sur localhost:5433 mais sur le
+      # service `db`. Cette valeur prime sur celle du .env, qui reste correcte
+      # pour un `npm run dev` lance en natif.
+      DATABASE_URL: postgres://cantine:cantine@db:5432/cantine
+      # Autorise /api/cron?date=YYYY-MM-DD pour tester les rappels sans attendre
+      # le bon jour. Volontairement absent en production.
+      CANTINE_AUTORISER_DATE_SIMULEE: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  # Conteneur utilitaire, sans service long : migrations, seed, CLI portail.
+  # Lance a la demande via `docker compose run --rm outils <commande>`.
+  outils:
+    # Reutilise l'image construite par `migrations`, jamais reconstruite ici :
+    # une seule source de verite pour les deux.
+    image: cantine-alerte-outils
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://cantine:cantine@db:5432/cantine
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["outils"]
+    command: ["node", "--version"]
+
+volumes:
+  donnees:

@@ -1,0 +1,167 @@
+:root {
+  --fond: #fbfbfa;
+  --carte: #ffffff;
+  --texte: #1c1b1a;
+  --doux: #6b6863;
+  --bord: #e3e0db;
+  --accent: #1f6feb;
+  --alerte: #b4342a;
+  --ok: #216e4e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fond: #191817;
+    --carte: #232120;
+    --texte: #eeece8;
+    --doux: #a5a09a;
+    --bord: #38352f;
+    --accent: #6ea8ff;
+    --alerte: #f08a80;
+    --ok: #6cc79b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--fond);
+  color: var(--texte);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0 0 0.25rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.75rem;
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+.doux {
+  color: var(--doux);
+  font-size: 0.9rem;
+}
+
+.carte {
+  background: var(--carte);
+  border: 1px solid var(--bord);
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 0.3rem;
+}
+
+input[type="email"],
+input[type="password"],
+input[type="text"] {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--bord);
+  border-radius: 7px;
+  background: var(--fond);
+  color: var(--texte);
+  font: inherit;
+  margin-bottom: 1rem;
+}
+
+button {
+  padding: 0.55rem 1.1rem;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondaire {
+  background: transparent;
+  border-color: var(--bord);
+  color: var(--texte);
+}
+
+.jours {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.jours label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--bord);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-weight: 500;
+  margin: 0;
+  cursor: pointer;
+}
+
+.message {
+  border-left: 3px solid var(--bord);
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 1rem;
+  background: var(--carte);
+  border-radius: 0 7px 7px 0;
+}
+
+.message.erreur {
+  border-left-color: var(--alerte);
+  color: var(--alerte);
+}
+
+.message.succes {
+  border-left-color: var(--ok);
+  color: var(--ok);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--bord);
+}
+
+th {
+  color: var(--doux);
+  font-weight: 600;
+}
+
+.tableau {
+  overflow-x: auto;
+}

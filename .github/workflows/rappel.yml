@@ -1,0 +1,37 @@
+# Filet de securite pour le cron.
+#
+# Le plan Vercel Hobby limite les taches planifiees a UNE execution par jour,
+# declenchee a +/- 59 minutes de l'heure visee, et sans reessai en cas d'echec.
+# Si le portail est indisponible a ce moment-la, le rappel du jour est perdu.
+#
+# Ce workflow rappelle le meme endpoint un peu plus tard. L'endpoint est
+# idempotent (contrainte d'unicite sur les envois), donc un declenchement en
+# double n'envoie pas deux mails.
+#
+# Secrets a definir dans le depot : APP_URL et CRON_SECRET.
+
+name: Rappel cantine (secours)
+
+on:
+  schedule:
+    # 19h00 UTC, soit trois heures apres le cron Vercel, en gardant de la marge
+    # avant minuit heure de Paris.
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+jobs:
+  declencher:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Appeler l'endpoint de rappel
+        run: |
+          if [ -z "${{ secrets.APP_URL }}" ] || [ -z "${{ secrets.CRON_SECRET }}" ]; then
+            echo "Secrets APP_URL et CRON_SECRET requis." >&2
+            exit 1
+          fi
+          code=$(curl -sS -o reponse.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron")
+          echo "HTTP $code"
+          cat reponse.json
+          [ "$code" = "200" ]

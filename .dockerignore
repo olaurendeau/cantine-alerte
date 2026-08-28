@@ -1,0 +1,18 @@
+# Les secrets arrivent par env_file au demarrage, jamais dans l'image.
+.env
+.env.*
+!.env.example
+
+node_modules
+.next
+.git
+.github
+.vercel
+*.tsbuildinfo
+
+# Captures montrant des enfants mineurs : hors depot et hors image.
+docs
+
+*.log
+README.md
+CLAUDE.md
