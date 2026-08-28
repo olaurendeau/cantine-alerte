@@ -125,19 +125,51 @@ du comportement réel.
 
 ## Déploiement (Vercel + Neon)
 
-**1. Base Neon.** Créer un projet, récupérer l'URL de connexion **pooled** (elle contient
-`-pooler` et `?sslmode=require`). Appliquer le schéma depuis votre poste :
+**1. Base Neon.** Créer un projet. Neon donne **deux URL de connexion**, et la distinction est
+importante :
+
+| URL | Hôte | Usage |
+|---|---|---|
+| *Pooled* | `ep-xxx-**pooler**.region.aws.neon.tech` | l'application (`DATABASE_URL`) |
+| *Direct* | `ep-xxx.region.aws.neon.tech` | les migrations (`DATABASE_URL_MIGRATION`) |
+
+Les migrations **exigent la connexion directe** : le pooler PgBouncer tourne en mode transaction et
+ne conserve pas l'état de session, dont les outils de migration et le verrou de concurrence ont
+besoin. `scripts/migrer.ts` avertit si vous lui passez une URL en `-pooler`.
+
+**Les migrations s'exécutent à chaque déploiement** via le script `vercel-build`, qui enchaîne
+`node scripts/migrer.ts && next build`. Il n'y a donc rien à lancer à la main : renseignez
+simplement `DATABASE_URL_MIGRATION` et déployez. Deux déploiements simultanés sont sérialisés par un
+verrou consultatif Postgres, sinon le second échouerait sur un `relation already exists`.
+
+Pour initialiser depuis votre poste sans attendre un déploiement :
 
 ```bash
-DATABASE_URL="postgres://...-pooler...neon.tech/neondb?sslmode=require" npm run db:migrer
+DATABASE_URL_MIGRATION="postgres://...neon.tech/neondb?sslmode=require" npm run db:migrer
 ```
+
+Le script relit ensuite la liste des tables et **échoue si l'une manque**, plutôt que d'annoncer un
+succès sur une base incomplète.
 
 Les migrations sont des fichiers versionnés dans `drizzle/`, rejouables à l'identique — préférez-les
 à `db:pousser`, qui décide seul des altérations.
 
+> ⚠️ Repartir de zéro demande de supprimer **deux** schémas. Drizzle tient son journal dans un schéma
+> `drizzle` distinct : vider `public` seul le laisse croire que tout est appliqué, et il ne rejoue
+> rien.
+> ```bash
+> psql "$DATABASE_URL_MIGRATION" -c 'DROP SCHEMA IF EXISTS public CASCADE;
+>   DROP SCHEMA IF EXISTS drizzle CASCADE; CREATE SCHEMA public;'
+> ```
+
 **2. Variables d'environnement Vercel** (Settings → Environment Variables), pour l'environnement
-Production : `DATABASE_URL`, `CANTINE_CLE_CHIFFREMENT`, `SESSION_SECRET`, `CRON_SECRET`, `APP_URL`,
-`ADMIN_EMAILS`, `MAIL_PROVIDER=brevo`, `BREVO_API_KEY`, `MAIL_EXPEDITEUR`.
+Production : `DATABASE_URL` (pooled), `DATABASE_URL_MIGRATION` (directe), `CANTINE_CLE_CHIFFREMENT`,
+`SESSION_SECRET`, `CRON_SECRET`, `APP_URL`, `ADMIN_EMAILS`, `MAIL_PROVIDER=brevo`, `BREVO_API_KEY`,
+`MAIL_EXPEDITEUR`.
+
+⚠️ Une preview qui hérite du `DATABASE_URL_MIGRATION` de production **migrera la base de
+production**. Donnez à l'environnement Preview sa propre base, ou ne définissez ces variables que
+pour Production.
 
 ⚠️ Générez une **clé de chiffrement différente** pour Preview et Production. Si les deux pointent sur
 la même, n'importe quelle preview de PR peut déchiffrer les mots de passe de production.
