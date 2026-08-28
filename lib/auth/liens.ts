@@ -9,7 +9,7 @@ const DUREE_MINUTES = 20;
 /** On ne stocke que l'empreinte : la base seule ne permet pas de se connecter. */
 const empreinte = (token: string) => createHash("sha256").update(token).digest("hex");
 
-const appUrl = () => process.env.APP_URL ?? "http://localhost:3000";
+import { urlPublique } from "../url-publique.ts";
 
 /**
  * Cree le compte si besoin, puis envoie un lien de connexion.
@@ -37,7 +37,7 @@ export async function envoyerLienMagique(emailBrut: string): Promise<void> {
     expireLe: new Date(Date.now() + DUREE_MINUTES * 60_000),
   });
 
-  const lien = `${appUrl()}/api/auth/verifier?token=${token}`;
+  const lien = `${urlPublique()}/api/auth/verifier?token=${token}`;
   await expediteur()({
     destinataires: [email],
     objet: "Votre lien de connexion — Alerte cantine",

@@ -4,6 +4,10 @@
 .env.local
 .env.*.local
 
+# Scripts d'amorcage de l'environnement d'agent : sans rapport avec le projet,
+# et porteurs de jetons en clair.
+.agent-vm.*
+
 node_modules/
 .next/
 out/

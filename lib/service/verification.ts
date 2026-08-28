@@ -18,6 +18,7 @@ import { decider } from "./decision.ts";
 import type { Logger } from "../portail/types.ts";
 import { silencieux } from "../portail/types.ts";
 import { reessayer } from "../reessayer.ts";
+import { urlPublique } from "../url-publique.ts";
 
 const SEUIL_DESACTIVATION = 3;
 const PAUSE_ENTRE_COMPTES_MS = Number(process.env.CANTINE_PAUSE_MS ?? 3000);
@@ -305,7 +306,7 @@ async function alerter(
     "Attention : tant que ce probleme dure, vos reservations de cantine ne sont",
     "plus surveillees. Pensez a verifier directement sur le portail.",
     "",
-    `Mettre a jour : ${process.env.APP_URL ?? "http://localhost:3000"}/reglages`,
+    `Mettre a jour : ${urlPublique()}/reglages`,
   ].join("\n");
 
   await expedier({ destinataires: adresses, objet, corps });

@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { consommerLien } from "../../../../lib/auth/liens.ts";
 import { ouvrirSession } from "../../../../lib/auth/session.ts";
+import { urlPublique } from "../../../../lib/url-publique.ts";
 
 export async function GET(requete: Request) {
   const token = new URL(requete.url).searchParams.get("token");
-  const base = process.env.APP_URL ?? new URL(requete.url).origin;
+  // Toujours absolue : NextResponse.redirect refuse une URL relative, et une
+  // APP_URL saisie sans schema produirait un echec au clic du parent.
+  const base = urlPublique();
 
   if (!token) return NextResponse.redirect(`${base}/connexion?erreur=1`);
 
