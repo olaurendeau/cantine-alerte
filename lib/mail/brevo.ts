@@ -3,6 +3,13 @@ import type { Message } from "./index.ts";
 const API = "https://api.brevo.com/v3/smtp/email";
 
 /**
+ * fetch n'a pas de delai par defaut, et le cron envoie un mail par destinataire
+ * en sequence dans une fonction plafonnee a 300 s. Sans borne, une seule
+ * connexion qui pend priverait de rappel toutes les familles suivantes.
+ */
+const DELAI_MAX_MS = 10_000;
+
+/**
  * Envoi transactionnel via Brevo. Le plan gratuit couvre 300 mails par jour,
  * largement au-dessus du besoin (un rappel par foyer et par jour choisi).
  */
@@ -25,6 +32,7 @@ export async function envoyerBrevo(message: Message): Promise<void> {
   for (const destinataire of message.destinataires) {
     try {
       const res = await fetch(API, {
+        signal: AbortSignal.timeout(DELAI_MAX_MS),
         method: "POST",
         headers: {
           "api-key": cle,

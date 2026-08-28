@@ -1,4 +1,4 @@
-import { API } from "./auth.ts";
+import { API, ErreurStructure, ErreurTemporaire } from "./auth.ts";
 import { ajouter, iso, jourDepuisIso, lundiDe } from "./dates.ts";
 import type { Session } from "./session.ts";
 import type { Cible, ConfigPortail, Logger, Pointage } from "./types.ts";
@@ -60,8 +60,28 @@ export async function getPrestations(
     body: JSON.stringify({ type_pointage: "R", date_start: iso(debut), date_end: iso(fin) }),
   });
   const txt = await res.text();
+  // Meme classification qu'a la connexion : un 429 ne doit pas etre rejoue
+  // (insister prolonge le blocage par IP), un 5xx merite un nouvel essai.
+  if (res.status === 429) {
+    throw new ErreurTemporaire(
+      "429 : le portail limite le debit (throttling par adresse IP). " +
+        "Espacer les requetes et reessayer plus tard.",
+      429,
+    );
+  }
+  if (res.status >= 500) {
+    throw new ErreurTemporaire(`Portail indisponible (HTTP ${res.status})`, res.status);
+  }
   if (!res.ok) throw new Error(`prestations HTTP ${res.status} : ${txt.slice(0, 300)}`);
-  return JSON.parse(txt);
+  try {
+    return JSON.parse(txt);
+  } catch {
+    // Un 200 dont le corps n'est pas du JSON : page de maintenance ou portail
+    // interstitiel. Rejouer donnerait la meme chose.
+    throw new ErreurStructure(
+      `Reponse /api/adulte/prestations non JSON (HTTP ${res.status}) : ${txt.slice(0, 200)}`,
+    );
+  }
 }
 
 /**
@@ -71,7 +91,7 @@ export async function getPrestations(
 function pointages(payload: Payload): Pointage[] {
   const d = payload?.data;
   if (!d || typeof d.pointages !== "object") {
-    throw new Error("Structure inattendue : data.pointages absent. Le portail a change.");
+    throw new ErreurStructure("Structure inattendue : data.pointages absent. Le portail a change.");
   }
   return Object.values(d.pointages);
 }
@@ -117,7 +137,7 @@ export function analyser(payload: Payload, cfg: ConfigPortail, debut: Date, fin:
     const offertes = Object.values(payload?.data?.prestations ?? {})
       .map((o) => `${o?.prestation?.code} (${o?.prestation?.libelle})`)
       .join(", ");
-    throw new Error(
+    throw new ErreurStructure(
       `Aucune prestation ne correspond a ${cfg.prestation}. Prestations offertes : ${offertes}.`,
     );
   }

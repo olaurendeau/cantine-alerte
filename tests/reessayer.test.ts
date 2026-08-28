@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ErreurIdentifiants, ErreurTemporaire } from "../lib/portail/auth.ts";
+import { ErreurIdentifiants, ErreurStructure, ErreurTemporaire } from "../lib/portail/auth.ts";
 import { reessayer } from "../lib/reessayer.ts";
 
 /** Attentes collectees au lieu d'etre subies, pour que les tests soient instantanes. */
@@ -112,4 +112,24 @@ test("propage la derniere erreur quand toutes les tentatives echouent", async ()
   );
   assert.equal(appels, 3);
   assert.equal(attentes.length, 2);
+});
+
+test("une structure illisible n'est pas rejouee", async () => {
+  // Le portail a repondu, mais sa forme a change : la reponse sera identique au
+  // coup suivant. Insister ne corrige rien et refait les quatre sauts de
+  // connexion a chaque fois, donc pousse vers le 429 par adresse IP.
+  const { attentes, patienter } = faussePatience();
+  let appels = 0;
+  await assert.rejects(
+    reessayer(
+      async () => {
+        appels++;
+        throw new ErreurStructure("Structure inattendue : data.pointages absent.");
+      },
+      { patienter },
+    ),
+    /Structure inattendue/,
+  );
+  assert.equal(appels, 1);
+  assert.deepEqual(attentes, []);
 });

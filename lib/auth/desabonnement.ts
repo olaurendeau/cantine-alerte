@@ -11,9 +11,18 @@ import { urlPublique } from "../url-publique.ts";
  * seule action — il ne vaut pas une session.
  */
 
+/** Meme cle que les sessions, meme exigence de longueur. Cf. lib/auth/session.ts */
+const LONGUEUR_MIN = 32;
+
 function secret(): string {
   const s = process.env.SESSION_SECRET;
   if (!s) throw new Error("SESSION_SECRET manquante. Generer : openssl rand -base64 32");
+  if (s.length < LONGUEUR_MIN) {
+    throw new Error(
+      `SESSION_SECRET trop courte (${s.length} caracteres, minimum ${LONGUEUR_MIN}). ` +
+        "Generer : openssl rand -base64 32",
+    );
+  }
   return s;
 }
 

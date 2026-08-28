@@ -6,6 +6,15 @@ const UA =
   "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 
 /**
+ * fetch attend indefiniment par defaut. Le cron traite les familles en sequence
+ * dans une fonction plafonnee a 300 s : un seul portail qui ne repond plus
+ * consommerait tout le budget et les familles suivantes ne seraient jamais
+ * traitees, sans la moindre trace. Mieux vaut echouer vite sur une famille que
+ * perdre la file.
+ */
+const DELAI_MAX_MS = 15_000;
+
+/**
  * Rend une URL lisible dans les traces : masque les JWT (un token d'amorcage
  * fait plusieurs centaines de caracteres et n'a rien a faire dans un log) et
  * tronque le reste.
@@ -49,7 +58,12 @@ export function nouvelleSession(trace: Logger = silencieux) {
       ...((opts.headers as Record<string, string>) ?? {}),
     };
     if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
-    const res = await fetch(url, { ...opts, headers, redirect: "manual" });
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(DELAI_MAX_MS),
+      ...opts,
+      headers,
+      redirect: "manual",
+    });
     absorber(res);
     trace(`${opts.method ?? "GET"} ${propre(url)} -> ${res.status}`);
     const loc = res.headers.get("location");

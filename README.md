@@ -95,7 +95,7 @@ Choisissez une date dont la semaine cible n'est pas encore réservée pour voir 
 |---|---|
 | `DATABASE_URL` | Postgres. En local, celui du `docker compose`. |
 | `CANTINE_CLE_CHIFFREMENT` | Clé AES 32 octets base64 (`openssl rand -base64 32`). **Une clé différente par environnement.** |
-| `SESSION_SECRET` | Signature des cookies de session. |
+| `SESSION_SECRET` | Signature des cookies de session **et** des liens de désabonnement. 32 caractères minimum, contrôlé au démarrage. |
 | `CRON_SECRET` | Protège `/api/cron`. Vercel l'envoie en `Authorization: Bearer`. |
 | `APP_URL` | Base publique, sert à construire les liens de connexion. |
 | `ADMIN_EMAILS` | Adresses des administrateurs, séparées par des virgules. |
@@ -104,6 +104,7 @@ Choisissez une date dont la semaine cible n'est pas encore réservée pour voir 
 | `CANTINE_BDD`, `CANTINE_API_KEY`, `CANTINE_DB_ID`, `CANTINE_TYPE_ID`, `CANTINE_PORTAIL` | Identifient la collectivité. Valeurs par défaut : L'Argentière-la-Bessée. |
 | `CANTINE_PRESTATION` | Regex de la prestation surveillée (défaut `RepE|Repas enfant`). |
 | `CANTINE_EXCLUSIONS` | Dates à ignorer, `YYYY-MM-DD` séparées par des virgules. |
+| `CANTINE_PAUSE_MS` | Pause entre deux familles dans le cron (défaut 3000). Le throttling du portail est par IP. |
 
 **Déployer pour une autre commune** : ouvrez la page de connexion de votre portail et relevez les
 champs cachés `api_key`, `type` et `db` du formulaire, ainsi que le nom de base dans l'URL. Puis

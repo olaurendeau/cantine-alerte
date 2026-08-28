@@ -43,5 +43,11 @@ if (resultat.traites.length === 0) {
 }
 for (const t of resultat.traites) {
   console.log(`${t.email} -> ${t.statut}${t.detail ? ` (${t.detail})` : ""}`);
+  if (t.inconnus?.length) {
+    console.error(
+      `  Attention : etat(s) non repertorie(s) ${t.inconnus.join(", ")}, traite(s) comme ` +
+        "non reserve(s). A classer dans ETATS_RESERVES ou ETATS_NON_RESERVES.",
+    );
+  }
 }
 process.exit(0);

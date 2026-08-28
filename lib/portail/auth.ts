@@ -44,6 +44,20 @@ export class ErreurTemporaire extends Error {
   }
 }
 
+/**
+ * Le portail a repondu, mais pas ce qu'on sait lire : champ cache absent, JSON
+ * illisible, structure du payload changee. Rejouer ne peut pas aider — la
+ * reponse sera identique — et chaque tentative refait les quatre sauts de
+ * connexion, donc alimente le throttling par IP qu'on cherche justement a
+ * eviter. Ces erreurs demandent une correction du parsing, pas de la patience.
+ */
+export class ErreurStructure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ErreurStructure";
+  }
+}
+
 function jwtPayload(token: string): Record<string, unknown> {
   try {
     return JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
@@ -100,7 +114,7 @@ export async function login(
   const corpsAmorce = await res.text();
   const amorce = tokensDe(corpsAmorce).pop();
   if (!amorce) {
-    throw new Error(
+    throw new ErreurStructure(
       `Token d'amorcage introuvable (HTTP ${res.status}). Verifier CANTINE_BDD ` +
         `(actuel : ${cfg.bdd}).`,
     );
@@ -112,7 +126,7 @@ export async function login(
   const page = await res.text();
   const csrf = champCache(page, "_token");
   if (!csrf) {
-    throw new Error(
+    throw new ErreurStructure(
       `CSRF _token introuvable sur la page de connexion (HTTP ${res.status}). ` +
         "Le formulaire du portail a probablement change.",
     );
@@ -186,10 +200,12 @@ export async function login(
   try {
     out = JSON.parse(brut);
   } catch {
-    throw new Error(`Reponse /api/login non JSON (HTTP ${res.status}) : ${brut.slice(0, 200)}`);
+    throw new ErreurStructure(
+      `Reponse /api/login non JSON (HTTP ${res.status}) : ${brut.slice(0, 200)}`,
+    );
   }
   if (!out?.data?.token) {
-    throw new Error(`Reponse /api/login inattendue : ${brut.slice(0, 300)}`);
+    throw new ErreurStructure(`Reponse /api/login inattendue : ${brut.slice(0, 300)}`);
   }
   return out.data.token;
 }

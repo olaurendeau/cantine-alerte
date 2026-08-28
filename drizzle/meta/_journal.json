@@ -15,6 +15,13 @@
       "when": 1787835708015,
       "tag": "0001_confirmations",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787948821296,
+      "tag": "0002_anti_doublon_et_index",
+      "breakpoints": true
     }
   ]
 }

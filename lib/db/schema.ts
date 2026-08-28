@@ -1,6 +1,7 @@
 import {
   boolean,
   date,
+  index,
   integer,
   pgTable,
   text,
@@ -67,22 +68,28 @@ export const identifiantsPortail = pgTable("identifiants_portail", {
  * toujours un lundi : 0 = lundi (dernier jour), 1 = dimanche, 2 = samedi...
  * Au-dela de 6 on retomberait sur l'echeance precedente.
  */
-export const rappels = pgTable("rappels", {
-  parentId: uuid("parent_id")
-    .primaryKey()
-    .references(() => parents.id, { onDelete: "cascade" }),
-  joursAvant: integer("jours_avant").array().notNull().default([1]),
-  /**
-   * Jours ou l'on n'ecrit PAS quand tout est deja reserve.
-   *
-   * Exprime en negatif a dessein : la liste vide, donc le defaut, signifie
-   * "confirmer tous les jours choisis". Un silence est ambigu pour le parent —
-   * il ne peut pas distinguer "rien a faire" d'un service en panne — donc la
-   * confirmation est le comportement par defaut, et ajouter un jour de rappel
-   * n'oblige pas a penser a l'activer.
-   */
-  joursSilencieux: integer("jours_silencieux").array().notNull().default([]),
-});
+export const rappels = pgTable(
+  "rappels",
+  {
+    parentId: uuid("parent_id")
+      .primaryKey()
+      .references(() => parents.id, { onDelete: "cascade" }),
+    joursAvant: integer("jours_avant").array().notNull().default([1]),
+    /**
+     * Jours ou l'on n'ecrit PAS quand tout est deja reserve.
+     *
+     * Exprime en negatif a dessein : la liste vide, donc le defaut, signifie
+     * "confirmer tous les jours choisis". Un silence est ambigu pour le parent —
+     * il ne peut pas distinguer "rien a faire" d'un service en panne — donc la
+     * confirmation est le comportement par defaut, et ajouter un jour de rappel
+     * n'oblige pas a penser a l'activer.
+     */
+    joursSilencieux: integer("jours_silencieux").array().notNull().default([]),
+  },
+  // Le cron selectionne les comptes du jour avec `jours_avant @> ARRAY[n]` :
+  // sans index GIN c'est un parcours complet a chaque execution.
+  (t) => [index("rappels_jours_avant_idx").using("gin", t.joursAvant)],
+);
 
 /**
  * Trace des envois. La contrainte d'unicite est l'anti-doublon : le cron peut
@@ -102,15 +109,31 @@ export const envois = pgTable(
     type: text("type").notNull().default("rappel"),
     envoyeLe: timestamp("envoye_le", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [unique("envoi_unique").on(t.parentId, t.semaineVisee, t.joursAvant)],
+  // `type` fait partie de la cle : un rappel et une confirmation ne se
+  // remplacent pas. Sans lui, une confirmation posee par le cron de 16 h
+  // occuperait le creneau et etoufferait le rappel que le passage de 19 h
+  // declencherait si une reservation venait d'etre annulee — soit exactement
+  // le cas que le filet est cense rattraper.
+  (t) => [unique("envoi_unique").on(t.parentId, t.semaineVisee, t.joursAvant, t.type)],
 );
 
 /** On ne stocke que le hash du token : la base seule ne permet pas de se connecter. */
-export const liensMagiques = pgTable("liens_magiques", {
-  tokenHash: text("token_hash").primaryKey(),
-  parentId: uuid("parent_id")
-    .notNull()
-    .references(() => parents.id, { onDelete: "cascade" }),
-  expireLe: timestamp("expire_le", { withTimezone: true }).notNull(),
-  utiliseLe: timestamp("utilise_le", { withTimezone: true }),
-});
+export const liensMagiques = pgTable(
+  "liens_magiques",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    parentId: uuid("parent_id")
+      .notNull()
+      .references(() => parents.id, { onDelete: "cascade" }),
+    expireLe: timestamp("expire_le", { withTimezone: true }).notNull(),
+    utiliseLe: timestamp("utilise_le", { withTimezone: true }),
+  },
+  (t) => [
+    // Lu a chaque demande de lien : purge des jetons expires, et comptage des
+    // jetons recents qui borne le debit d'envoi.
+    index("liens_magiques_expire_le_idx").on(t.expireLe),
+    // Seule cle etrangere du schema que rien d'autre ne couvre : sans elle,
+    // supprimer un parent parcourt la table entiere.
+    index("liens_magiques_parent_id_idx").on(t.parentId),
+  ],
+);
