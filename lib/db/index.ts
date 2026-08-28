@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema.ts";
+import { urlApplication } from "./url.ts";
 
 type Base = ReturnType<typeof drizzle<typeof schema>>;
 
@@ -17,14 +18,8 @@ const global = globalThis as typeof globalThis & {
 
 function reelle(): Base {
   if (!global.__cantineDb) {
-    const url = process.env.DATABASE_URL;
-    if (!url) {
-      throw new Error(
-        "DATABASE_URL manquante. En local : docker compose up -d, puis copier .env.example en .env.",
-      );
-    }
     // postgres.js traduit ?sslmode=require en ssl, ce que Neon exige.
-    global.__cantineSql ??= postgres(url, { max: 1 });
+    global.__cantineSql ??= postgres(urlApplication(), { max: 1 });
     global.__cantineDb = drizzle(global.__cantineSql, { schema });
   }
   return global.__cantineDb;

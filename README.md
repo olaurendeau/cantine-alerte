@@ -125,17 +125,21 @@ du comportement réel.
 
 ## Déploiement (Vercel + Neon)
 
-**1. Base Neon.** Créer un projet. Neon donne **deux URL de connexion**, et la distinction est
-importante :
-
-| URL | Hôte | Usage |
-|---|---|---|
-| *Pooled* | `ep-xxx-**pooler**.region.aws.neon.tech` | l'application (`DATABASE_URL`) |
-| *Direct* | `ep-xxx.region.aws.neon.tech` | les migrations (`DATABASE_URL_MIGRATION`) |
+**1. Base Neon.** Installer l'intégration Neon sur le projet Vercel. Elle définit elle-même
+`DATABASE_URL` (via le pooler) et `DATABASE_URL_UNPOOLED` (connexion directe), que l'application
+lit automatiquement : **il n'y a aucune URL à recopier**.
 
 Les migrations **exigent la connexion directe** : le pooler PgBouncer tourne en mode transaction et
 ne conserve pas l'état de session, dont les outils de migration et le verrou de concurrence ont
-besoin. `scripts/migrer.ts` avertit si vous lui passez une URL en `-pooler`.
+besoin. `scripts/migrer.ts` choisit donc, dans l'ordre : `DATABASE_URL_MIGRATION`,
+`DATABASE_URL_UNPOOLED`, `POSTGRES_URL_NON_POOLING`, puis `DATABASE_URL` en dernier recours — avec
+un avertissement si l'URL retenue passe par le pooler.
+
+> ⚠️ **Vercel n'interprète pas les références entre variables.** Mettre `$POSTGRES_URL_NON_POOLING`
+> comme valeur de `DATABASE_URL_MIGRATION` transmet cette chaîne littéralement, et le build échoue
+> sur un `Invalid URL` qui n'oriente pas vers la cause. Collez la valeur complète, ou mieux : ne
+> définissez pas la variable du tout et laissez l'intégration Neon fournir la sienne. Le code
+> détecte ce cas et le nomme explicitement.
 
 **Les migrations s'exécutent à chaque déploiement** via le script `vercel-build`, qui enchaîne
 `node scripts/migrer.ts && next build`. Il n'y a donc rien à lancer à la main : renseignez
@@ -163,13 +167,12 @@ Les migrations sont des fichiers versionnés dans `drizzle/`, rejouables à l'id
 > ```
 
 **2. Variables d'environnement Vercel** (Settings → Environment Variables), pour l'environnement
-Production : `DATABASE_URL` (pooled), `DATABASE_URL_MIGRATION` (directe), `CANTINE_CLE_CHIFFREMENT`,
-`SESSION_SECRET`, `CRON_SECRET`, `APP_URL`, `ADMIN_EMAILS`, `MAIL_PROVIDER=brevo`, `BREVO_API_KEY`,
-`MAIL_EXPEDITEUR`.
+Production. Les URL de base viennent de l'intégration Neon ; il reste à définir :
+`CANTINE_CLE_CHIFFREMENT`, `SESSION_SECRET`, `CRON_SECRET`, `APP_URL`, `ADMIN_EMAILS`,
+`MAIL_PROVIDER=brevo`, `BREVO_API_KEY`, `MAIL_EXPEDITEUR`.
 
-⚠️ Une preview qui hérite du `DATABASE_URL_MIGRATION` de production **migrera la base de
-production**. Donnez à l'environnement Preview sa propre base, ou ne définissez ces variables que
-pour Production.
+⚠️ Une preview qui pointe sur la base de production **la migrera à chaque déploiement de branche**.
+Donnez à l'environnement Preview sa propre base Neon.
 
 ⚠️ Générez une **clé de chiffrement différente** pour Preview et Production. Si les deux pointent sur
 la même, n'importe quelle preview de PR peut déchiffrer les mots de passe de production.

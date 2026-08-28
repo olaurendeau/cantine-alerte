@@ -15,25 +15,22 @@ import { chargerEnv } from "./env.ts";
 
 chargerEnv();
 
-// Neon expose deux points d'entree : l'un passe par PgBouncer en mode
-// transaction (hote suffixe "-pooler"), l'autre attaque la base directement.
-// Le pooler ne conserve pas l'etat de session entre deux transactions, or les
-// migrations s'appuient dessus — et le verrou pose plus bas est lui aussi de
-// portee session. D'ou une variable dediee pointant sur la connexion directe,
-// l'application gardant le pooler.
-const url = process.env.DATABASE_URL_MIGRATION ?? process.env.DATABASE_URL;
-if (!url) {
-  console.error(
-    "DATABASE_URL_MIGRATION (ou a defaut DATABASE_URL) manquante.\n" +
-      "Sur Vercel, definir DATABASE_URL_MIGRATION avec l'URL Neon DIRECTE (sans '-pooler').",
-  );
+const { urlMigration, passeParLePooler } = await import("../lib/db/url.ts");
+
+let url: string;
+try {
+  // Resout DATABASE_URL_MIGRATION, puis les variables que l'integration Neon
+  // pose d'elle-meme (DATABASE_URL_UNPOOLED, POSTGRES_URL_NON_POOLING).
+  url = urlMigration();
+} catch (e) {
+  console.error((e as Error).message);
   process.exit(2);
 }
 
-if (/-pooler\./.test(url)) {
+if (passeParLePooler(url)) {
   console.warn(
     "Attention : cette URL passe par le pooler Neon (hote en -pooler).\n" +
-      "Les migrations demandent la connexion DIRECTE : retirez '-pooler' du nom d'hote.\n" +
+      "Les migrations demandent la connexion DIRECTE : utilisez DATABASE_URL_UNPOOLED.\n" +
       "Le pooler reste le bon choix pour l'application elle-meme.\n",
   );
 }
