@@ -84,6 +84,14 @@ export const JOURS_AVANT_POSSIBLES = [0, 1, 2, 3, 4, 5, 6];
 
 export const libelleJourAvant = (n: number): string => JOURS_AVANT[n] ?? `J-${n}`;
 
+/** "lundi 21" : assez court pour une liste, assez clair pour ne pas compter. */
+export const formaterJourCourt = (d: Date): string =>
+  new Intl.DateTimeFormat("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(d);
+
 export const formaterJour = (d: Date): string =>
   new Intl.DateTimeFormat("fr-FR", {
     weekday: "long",

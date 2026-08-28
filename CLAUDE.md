@@ -57,6 +57,8 @@ node scripts/verifier.ts --verbose                      # trace chaque étape HT
 node scripts/cron.ts --date 2026-09-10                  # exécute un cycle de rappel complet
 node scripts/seed.ts --rappels 0,1,4                    # crée un compte de test depuis le .env
 node scripts/lien.ts moi@exemple.fr                     # génère un lien de connexion
+node scripts/apercu-mail.ts                             # rend les 8 variantes de mail dans apercu/
+node scripts/tester-mail.ts moi@exemple.fr              # envoie un vrai gabarit
 ```
 
 `--date` accepte **plusieurs dates séparées par des virgules** : une seule connexion et une seule
@@ -207,8 +209,8 @@ pas la fratrie. La notification regroupe par jour (`- lundi 21 septembre : <pren
 passe en **urgente** quand l'échéance tombe aujourd'hui (`J-0`), ce qui change l'objet et le délai
 annoncé (« ce soir avant minuit » au lieu de « dans 6 jours »).
 
-Composition et transport sont séparés : `composerNotification()` ne fait aucune I/O et renvoie
-`{urgent, objet, corps}`, que `lib/mail` envoie (`console` en développement, `brevo` en production).
+La mise en forme n'appartient pas à `lib/portail`, qui ne connaît que le portail : elle vit dans
+`lib/mail`. C'est ce qui permet de refondre les mails sans toucher au métier.
 
 ## L'application
 
@@ -251,12 +253,48 @@ Points de conception qui ont une raison d'être :
 - **La page admin ne charge jamais `mdp_chiffre` ni `portail_email`.** L'administrateur n'a aucun
   besoin des identifiants des familles : la requête ne les sélectionne pas.
 
+## Les mails
+
+Cinq messages — rappel, confirmation, lien de connexion, échec parent, échec admin — tous construits
+par `lib/mail/messages.ts` sur le gabarit partagé `lib/mail/gabarit.ts`.
+
+**Un bloc rend ses deux formats.** `type Bloc = { html: string; texte: string }` : le HTML et le
+texte sortent de la même source. Le travers habituel est une version texte écrite une fois puis
+oubliée, qui finit par mentir ; ici, ajouter un bloc oblige à écrire ses deux rendus. Le texte n'est
+pas décoratif — il sert de repli, et son absence pénalise la délivrabilité.
+
+Contraintes de rendu à ne pas « simplifier » :
+
+- **Tableaux et styles en ligne.** Gmail supprime `<style>` pour les comptes non-Gmail, Outlook rend
+  via le moteur de Word : ni flexbox ni grid. Le `<style>` ne porte que des améliorations.
+- **Bouton en tableau**, pas un `<a>` stylé : Outlook ignore `padding` et `background` sur un lien
+  seul, le bouton y deviendrait un texte nu.
+- **`echapper()` sur toute donnée non littérale.** Les prénoms viennent du portail, les motifs
+  d'erreur de messages tiers. En texte brut le risque n'existait pas ; en HTML c'est une injection.
+- **Preheader** masqué portant l'échéance : c'est lui qui rend le mail utile depuis la liste des
+  messages, sans l'ouvrir.
+- **Ni blanc ni noir purs**, pour rester lisible quand un client inverse les couleurs.
+- Le poids du bouton suit l'urgence : `ton: "secondaire"` sur la confirmation, un bouton plein sur
+  un message disant « rien à faire » invitant à cliquer sans raison.
+
+`node scripts/apercu-mail.ts` rend les huit variantes dans `apercu/`, avec un index qui les compare
+à 375 px et 600 px. Un aperçu navigateur valide la mise en page, **pas** la compatibilité :
+`scripts/tester-mail.ts` envoie un vrai gabarit pour relecture dans un client réel.
+
+**Désabonnement** : lien signé HMAC (`lib/auth/desabonnement.ts`), sans ligne en base. La page
+`/desabonnement` confirme par un bouton au lieu d'agir au chargement — les passerelles de sécurité
+et antivirus suivent les liens des mails, un désabonnement sur simple `GET` serait déclenché par un
+robot à l'insu du parent.
+
 ## Conventions
 
-Code, commentaires et messages en français, **sans accents dans les chaînes du code source** (les
-accents ne figurent que dans les fichiers `.md` et le JSX destiné à l'affichage). Les imports
-portent l'extension `.ts` explicite : Node exécute le TypeScript en mode « strip-only », qui l'exige
-et qui refuse par ailleurs les propriétés de paramètre de constructeur et les `enum`.
+Code et commentaires en français. **Pas d'accents dans les identifiants, les commentaires et les
+messages techniques** (journaux, erreurs internes) ; en revanche le texte lu par les utilisateurs —
+mails et JSX — est écrit en français correctement accentué. Un parent ne doit pas recevoir
+« a reserver avant l'echeance ».
+
+Les imports portent l'extension `.ts` explicite : Node exécute le TypeScript en mode « strip-only »,
+qui l'exige et qui refuse par ailleurs les propriétés de paramètre de constructeur et les `enum`.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

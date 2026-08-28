@@ -1,4 +1,5 @@
 import { envoyerLienMagique } from "../../lib/auth/liens.ts";
+import { urlDepot } from "../../lib/url-publique.ts";
 
 export default async function Connexion({
   searchParams,
@@ -43,6 +44,10 @@ export default async function Connexion({
 
       <p className="doux">
         <a href="/confidentialite">Ce que nous stockons, et pourquoi</a>
+        {" · "}
+        <a href={urlDepot()} target="_blank" rel="noreferrer noopener">
+          Code source
+        </a>
       </p>
     </>
   );

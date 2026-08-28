@@ -17,9 +17,7 @@ import {
   ajouter,
   analyser,
   aujourdhuiParis,
-  composerNotification,
   configDepuisEnv,
-  formaterConsole,
   getPrestations,
   iso,
   joursRestants,
@@ -29,8 +27,10 @@ import {
   prochaineEcheance,
   rapportStructure,
   semaineVisee,
+  urlPortail,
 } from "../lib/portail/index.ts";
 import type { Logger } from "../lib/portail/index.ts";
+import { mailRappel } from "../lib/mail/messages.ts";
 
 const AIDE = `Usage : node scripts/verifier.ts [options]
 
@@ -162,17 +162,20 @@ async function main() {
     for (const m of analyse.manquants) {
       console.log(`A reserver : ${iso(m.date)} ${m.enfant} (${m.prestation})`);
     }
-    console.log(
-      formaterConsole(
-        composerNotification(cfg, {
-          manquants: analyse.manquants,
-          semaine: s.debut,
-          echeance: s.echeance,
-          joursRestants: s.restants,
-          urgent: s.restants === 0,
-        }),
-      ),
-    );
+    const mail = mailRappel({
+      manquants: analyse.manquants,
+      semaine: s.debut,
+      echeance: s.echeance,
+      joursRestants: s.restants,
+      urgent: s.restants === 0,
+      liens: {
+        reservation: urlPortail(cfg),
+        reglages: `${process.env.APP_URL ?? "http://localhost:3000"}/reglages`,
+      },
+    });
+    console.log(`\n${"=".repeat(64)}\nObjet : ${mail.objet}\n${"-".repeat(64)}`);
+    console.log(mail.texte);
+    console.log("=".repeat(64));
   }
 }
 

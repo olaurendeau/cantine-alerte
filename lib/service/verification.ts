@@ -2,16 +2,25 @@ import { and, eq, sql } from "drizzle-orm";
 import { dechiffrer } from "../crypto.ts";
 import { db } from "../db/index.ts";
 import { destinataires, envois, identifiantsPortail, parents, rappels } from "../db/schema.ts";
+import { urlDesabonnement } from "../auth/desabonnement.ts";
 import { expediteur, type Expediteur } from "../mail/index.ts";
 import {
+  mailConfirmation,
+  mailEchecAdmin,
+  mailEchecParent,
+  mailRappel,
+  type Liens,
+} from "../mail/messages.ts";
+import {
   ErreurIdentifiants,
+  PORTAIL_DEFAUT,
   aujourdhuiParis,
-  composerConfirmation,
   configDepuisEnv,
   iso,
   joursRestants as calculerRestants,
   prochaineEcheance,
   semaineVisee,
+  urlPortail,
   verifierParent,
 } from "../portail/index.ts";
 import { decider } from "./decision.ts";
@@ -21,6 +30,17 @@ import { reessayer } from "../reessayer.ts";
 import { urlPublique } from "../url-publique.ts";
 
 const SEUIL_DESACTIVATION = 3;
+
+/**
+ * Liens du pied de page. Ne prend pas la config du portail en parametre : ils
+ * doivent aussi etre calculables quand le dechiffrement des identifiants vient
+ * d'echouer, cas ou l'on n'a justement pas de config.
+ */
+const liensPour = (parentId: string): Liens => ({
+  reservation: urlPortail({ portail: process.env.CANTINE_PORTAIL ?? PORTAIL_DEFAUT }),
+  reglages: `${urlPublique()}/reglages`,
+  desabonnement: urlDesabonnement(parentId),
+});
 const PAUSE_ENTRE_COMPTES_MS = Number(process.env.CANTINE_PAUSE_MS ?? 3000);
 
 const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -190,20 +210,30 @@ async function traiterParent(
       return { ...base, statut: "deja_notifie", manquants };
     }
 
+    const liens = liensPour(compte.parentId);
     const message =
       decision === "rappel"
-        ? resultat.notification!
-        : composerConfirmation(cfg, {
+        ? mailRappel({
+            manquants: resultat.analyse.manquants,
             semaine: ctx.semaine,
             echeance: ctx.echeance,
             joursRestants: ctx.restants,
+            // Urgent quand l'echeance tombe aujourd'hui : derniere occasion.
+            urgent: ctx.restants === 0,
+            liens,
+          })
+        : mailConfirmation({
+            semaine: ctx.semaine,
+            echeance: ctx.echeance,
             reserves: resultat.analyse.reserves.length,
+            liens,
           });
 
     await ctx.expedier({
       destinataires: adresses,
       objet: message.objet,
-      corps: message.corps,
+      corps: message.texte,
+      html: message.html,
     });
     return { ...base, statut: decision === "rappel" ? "notifie" : "confirme", manquants };
   } catch (e) {
@@ -286,44 +316,36 @@ async function alerter(
   if (compte.alerteEchecLe) return;
 
   const desactive = invalides && echecs >= SEUIL_DESACTIVATION;
-  const objet = invalides
-    ? "Cantine : vos identifiants du portail ne fonctionnent plus"
-    : "Cantine : la verification n'a pas pu aboutir";
-  const corps = [
-    invalides
-      ? "La connexion au portail a ete refusee avec les identifiants enregistres."
-      : "Le portail n'a pas repondu correctement apres plusieurs tentatives. " +
-        "Il s'agit vraisemblablement d'un incident passager, vos identifiants ne " +
-        "sont pas en cause.",
-    `Motif : ${detail}`,
-    "",
-    desactive
-      ? "Les rappels sont suspendus jusqu'a mise a jour de vos identifiants."
-      : invalides
-        ? `Nouvel essai au prochain rappel (echec ${echecs}/${SEUIL_DESACTIVATION}).`
-        : "Nouvel essai au prochain rappel, sans action de votre part.",
-    "",
-    "Attention : tant que ce probleme dure, vos reservations de cantine ne sont",
-    "plus surveillees. Pensez a verifier directement sur le portail.",
-    "",
-    `Mettre a jour : ${urlPublique()}/reglages`,
-  ].join("\n");
-
-  await expedier({ destinataires: adresses, objet, corps });
+  const parent = mailEchecParent({
+    invalides,
+    detail,
+    echecs,
+    seuil: SEUIL_DESACTIVATION,
+    desactive,
+    liens: liensPour(compte.parentId),
+  });
+  await expedier({
+    destinataires: adresses,
+    objet: parent.objet,
+    corps: parent.texte,
+    html: parent.html,
+  });
 
   const admins = adminEmails();
   if (admins.length) {
+    const admin = mailEchecAdmin({
+      compte: compte.email,
+      invalides,
+      detail,
+      echecs,
+      desactive,
+      objetParent: parent.objet,
+    });
     await expedier({
       destinataires: admins,
-      objet: `[admin] ${objet} — ${compte.email}`,
-      // L'administrateur voit qui est en panne et pourquoi, jamais les
-      // identifiants du parent.
-      corps: [
-        `Compte : ${compte.email}`,
-        `Echecs consecutifs : ${echecs}${desactive ? " (compte desactive)" : ""}`,
-        `Type : ${invalides ? "identifiants refuses" : "erreur technique"}`,
-        `Motif : ${detail}`,
-      ].join("\n"),
+      objet: admin.objet,
+      corps: admin.texte,
+      html: admin.html,
     });
   }
 

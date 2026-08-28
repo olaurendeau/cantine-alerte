@@ -35,7 +35,10 @@ export async function envoyerBrevo(message: Message): Promise<void> {
           sender,
           to: [{ email: destinataire }],
           subject: message.objet,
+          // Les deux versions systematiquement : le client choisit, et un
+          // message sans partie texte est plus souvent classe en indesirable.
           textContent: message.corps,
+          ...(message.html ? { htmlContent: message.html } : {}),
         }),
       });
       if (!res.ok) {

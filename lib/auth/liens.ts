@@ -3,6 +3,7 @@ import { and, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { liensMagiques, parents } from "../db/schema.ts";
 import { expediteur } from "../mail/index.ts";
+import { mailLienConnexion } from "../mail/messages.ts";
 
 const DUREE_MINUTES = 20;
 
@@ -38,17 +39,12 @@ export async function envoyerLienMagique(emailBrut: string): Promise<void> {
   });
 
   const lien = `${urlPublique()}/api/auth/verifier?token=${token}`;
+  const mail = mailLienConnexion({ lien, dureeMinutes: DUREE_MINUTES });
   await expediteur()({
     destinataires: [email],
-    objet: "Votre lien de connexion — Alerte cantine",
-    corps: [
-      "Voici votre lien de connexion :",
-      "",
-      lien,
-      "",
-      `Il expire dans ${DUREE_MINUTES} minutes et ne fonctionne qu'une fois.`,
-      "Si vous n'etes pas a l'origine de cette demande, ignorez ce message.",
-    ].join("\n"),
+    objet: mail.objet,
+    corps: mail.texte,
+    html: mail.html,
   });
 }
 

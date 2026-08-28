@@ -41,6 +41,17 @@ export function normaliserUrl(brut: string): string {
  * ligne : elle ne sert que de dernier recours, un lien de connexion devant
  * rester valide au-dela du deploiement qui l'a emis.
  */
+/**
+ * Depot du code source.
+ *
+ * Affiche dans les mails et sur la page de confidentialite : c'est ce qui rend
+ * verifiable l'affirmation « nous pouvons techniquement dechiffrer votre mot de
+ * passe, uniquement pour interroger le portail ». Sans lien vers le code, la
+ * promesse ne serait que declarative. Surchargeable pour une instance forkee.
+ */
+export const urlDepot = (env: Environnement = process.env): string =>
+  env.CANTINE_DEPOT?.trim() || "https://github.com/olaurendeau/cantine-alerte";
+
 export function urlPublique(env: Environnement = process.env): string {
   const brut =
     env.APP_URL?.trim() ||

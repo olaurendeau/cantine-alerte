@@ -3,6 +3,7 @@
 .env
 .env.local
 .env.*.local
+.agent-vm.runtime.sh
 
 # Scripts d'amorcage de l'environnement d'agent : sans rapport avec le projet,
 # et porteurs de jetons en clair.
@@ -25,3 +26,6 @@ docs/screenshots-ui/
 
 .DS_Store
 *.log
+
+# Apercus de mails generes localement (donnees d exemple).
+apercu/

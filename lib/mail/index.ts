@@ -5,7 +5,12 @@ export type Message = {
   /** Un compte porte souvent deux adresses : les deux parents du foyer. */
   destinataires: string[];
   objet: string;
+  /**
+   * Version texte. Toujours presente : elle sert de repli aux clients qui
+   * refusent le HTML, et son absence penalise la delivrabilite.
+   */
   corps: string;
+  html?: string;
 };
 
 export type Expediteur = (message: Message) => Promise<void>;

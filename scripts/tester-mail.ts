@@ -27,15 +27,37 @@ if (fournisseur === "brevo") {
 }
 console.log(`Destinataires : ${destinataires.join(", ")}\n`);
 
+// On envoie un vrai gabarit, pas un message ad hoc : le but est de juger le
+// rendu dans un client reel, ce qu'un apercu navigateur ne dit pas.
+const { mailRappel } = await import("../lib/mail/messages.ts");
+const { jourDepuisIso } = await import("../lib/portail/dates.ts");
+
+const jours = ["2026-09-21", "2026-09-22", "2026-09-24", "2026-09-25"];
+const exemple = mailRappel({
+  manquants: ["Martin", "Soline"].flatMap((enfant) =>
+    jours.map((d) => ({
+      date: jourDepuisIso(d),
+      enfant,
+      prestation: "Repas enfant",
+      code: "ETAT_NON_RESERVE",
+    })),
+  ),
+  semaine: jourDepuisIso("2026-09-21"),
+  echeance: jourDepuisIso("2026-09-14"),
+  joursRestants: 6,
+  urgent: false,
+  liens: {
+    reservation: "https://parents.logiciel-enfance.fr/argentiere",
+    reglages: `${process.env.APP_URL ?? "http://localhost:3000"}/reglages`,
+  },
+});
+
 try {
   await expediteur()({
     destinataires,
-    objet: "Test de configuration — Alerte cantine",
-    corps: [
-      "Si vous lisez ce message, l'envoi de mail est correctement configure.",
-      "",
-      "Ce message est un test, aucune action n'est attendue.",
-    ].join("\n"),
+    objet: `[test] ${exemple.objet}`,
+    corps: exemple.texte,
+    html: exemple.html,
   });
   console.log("\nEnvoi accepte.");
   if (fournisseur === "brevo") {

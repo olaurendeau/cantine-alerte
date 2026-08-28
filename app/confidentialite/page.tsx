@@ -1,3 +1,5 @@
+import { urlDepot } from "../../lib/url-publique.ts";
+
 export const metadata = { title: "Ce que nous stockons — Alerte cantine" };
 
 /**
@@ -48,7 +50,12 @@ export default function Confidentialite() {
           dechiffrement n&apos;a lieu qu&apos;au moment d&apos;interroger le portail.
         </p>
         <p>
-          Le code de ce service est public : cette promesse est verifiable plutot que declarative.
+          Le code de ce service est public : cette promesse est vérifiable plutôt que déclarative.
+          Vous pouvez lire précisément ce qui est fait de votre mot de passe sur{" "}
+          <a href={urlDepot()} target="_blank" rel="noreferrer noopener">
+            le dépôt du code source
+          </a>
+          .
         </p>
       </section>
 
