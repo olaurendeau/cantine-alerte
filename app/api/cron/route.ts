@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { egaliteConstante } from "../../../lib/crypto.ts";
 import { executerCron } from "../../../lib/service/verification.ts";
+import type { ResultatCron } from "../../../lib/service/verification.ts";
 
 // Le cycle interroge le portail pour chaque famille, avec une pause entre
 // chacune pour ne pas declencher le throttling par IP. On prend la marge
@@ -47,6 +48,31 @@ function dateSimulee(requete: Request): Date | undefined {
   return new Date(`${brut}T12:00:00+02:00`);
 }
 
+/**
+ * Resume anonyme d'un cycle : le cadrage, le total, et un decompte par statut.
+ * Assez pour savoir d'un coup d'oeil si l'execution s'est bien passee, sans
+ * nommer personne.
+ */
+function resume(resultat: ResultatCron) {
+  const parStatut: Record<string, number> = {};
+  const inconnus = new Set<string>();
+  for (const t of resultat.traites) {
+    parStatut[t.statut] = (parStatut[t.statut] ?? 0) + 1;
+    for (const code of t.inconnus ?? []) inconnus.add(code);
+  }
+  return {
+    aujourdhui: resultat.aujourdhui,
+    echeance: resultat.echeance,
+    semaineVisee: resultat.semaineVisee,
+    joursRestants: resultat.joursRestants,
+    total: resultat.traites.length,
+    parStatut,
+    // Un code d'etat inconnu du portail doit sauter aux yeux : c'est le seul
+    // signal annoncant qu'une regle de classement est a completer.
+    ...(inconnus.size ? { etatsNonRepertories: [...inconnus] } : {}),
+  };
+}
+
 async function executer(requete: Request) {
   if (!autorise(requete)) {
     return NextResponse.json({ erreur: "non autorise" }, { status: 401 });
@@ -59,15 +85,31 @@ async function executer(requete: Request) {
     return NextResponse.json({ erreur: (e as Error).message }, { status: 400 });
   }
 
-  const resultat = await executerCron({
-    maintenant,
-    trace: (...a) => console.log("[cron]", ...a),
-  });
+  let resultat: ResultatCron;
+  try {
+    resultat = await executerCron({
+      maintenant,
+      trace: (...a) => console.log("[cron]", ...a),
+    });
+  } catch (e) {
+    // Le cycle isole deja chaque famille ; arriver ici veut dire que c'est le
+    // cadre lui-meme qui a lache (base injoignable, secret manquant).
+    //
+    // Le motif reste dans les logs Vercel, qui sont prives : ces pannes-la sont
+    // precisement celles dont le message expose la cible de connexion — hote,
+    // port, base, parfois l'utilisateur — ou des valeurs de ligne recopiees par
+    // le pilote. Le filet GitHub Actions imprime la reponse telle quelle dans
+    // des journaux publics, au meme titre que le resume ci-dessous.
+    console.error("[cron] cycle interrompu :", (e as Error).message);
+    return NextResponse.json({ erreur: "cycle interrompu" }, { status: 500 });
+  }
 
-  // Le detail revient dans la reponse : c'est ce qu'on lit dans les logs Vercel
-  // pour savoir ce qui s'est passe sans avoir a instrumenter davantage.
+  // Le detail nominatif reste dans les logs Vercel, qui sont prives.
   console.log("[cron]", JSON.stringify(resultat));
-  return NextResponse.json(resultat);
+  // La reponse, elle, est agregee : elle transite par le filet GitHub Actions,
+  // dont les logs sont publics puisque le depot l'est. Y laisser les adresses
+  // des familles publierait la liste des inscrits.
+  return NextResponse.json(resume(resultat));
 }
 
 export const GET = executer;

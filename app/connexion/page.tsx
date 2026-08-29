@@ -13,7 +13,15 @@ export default async function Connexion({
     const { redirect } = await import("next/navigation");
     const email = String(formData.get("email") ?? "").trim();
     if (!email.includes("@")) redirect("/connexion?erreur=1");
-    await envoyerLienMagique(email);
+    try {
+      await envoyerLienMagique(email);
+    } catch (e) {
+      // Le message rendu ne dit jamais si l'adresse est inscrite. Laisser une
+      // panne remonter en 500 revelerait par le comportement ce que le texte
+      // s'applique a taire, et laisserait le parent devant une page d'erreur
+      // brute. On journalise et on affiche la meme confirmation.
+      console.error("[connexion] envoi du lien impossible :", (e as Error).message);
+    }
     redirect("/connexion?envoye=1");
   }
 
@@ -31,7 +39,14 @@ export default async function Connexion({
           20 minutes.
         </div>
       )}
-      {erreur && <div className="message erreur">Adresse email invalide.</div>}
+      {erreur === "lien" && (
+        <div className="message erreur">
+          Ce lien de connexion a expire ou a deja servi. Demandez-en un nouveau ci-dessous.
+        </div>
+      )}
+      {erreur && erreur !== "lien" && (
+        <div className="message erreur">Adresse email invalide.</div>
+      )}
 
       <form action={demander} className="carte">
         <label htmlFor="email">Votre adresse email</label>

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { egaliteConstante } from "../crypto.ts";
 import { urlPublique } from "../url-publique.ts";
+import { secretSignature } from "./secret.ts";
 
 /**
  * Lien de desabonnement, signe plutot que stocke.
@@ -11,14 +12,8 @@ import { urlPublique } from "../url-publique.ts";
  * seule action — il ne vaut pas une session.
  */
 
-function secret(): string {
-  const s = process.env.SESSION_SECRET;
-  if (!s) throw new Error("SESSION_SECRET manquante. Generer : openssl rand -base64 32");
-  return s;
-}
-
 const signature = (parentId: string) =>
-  createHmac("sha256", secret()).update(`desabonnement:${parentId}`).digest("base64url");
+  createHmac("sha256", secretSignature()).update(`desabonnement:${parentId}`).digest("base64url");
 
 export const signerDesabonnement = (parentId: string): string =>
   `${parentId}.${signature(parentId)}`;

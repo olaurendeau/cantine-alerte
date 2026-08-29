@@ -1,0 +1,34 @@
+# Verification a chaque poussee. Les tests sont purs : ni base, ni reseau, ni
+# secret, donc rien a configurer dans le depot pour que ce workflow tourne.
+
+name: Verification
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Le TypeScript est execute nativement, d'ou une version recente.
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # Les dates sont la seule logique sensible au fuseau du serveur : Vercel
+      # tourne en UTC, pas le poste du developpeur. La propriete etait affirmee
+      # dans la documentation sans que rien ne la verifie.
+      - run: npm run test:tz

@@ -1,20 +1,15 @@
 import { createHmac } from "node:crypto";
 import { cookies } from "next/headers";
 import { egaliteConstante } from "../crypto.ts";
+import { secretSignature } from "./secret.ts";
 
 const COOKIE = "cantine_session";
 const DUREE_JOURS = 30;
 
 type Charge = { parentId: string; email: string; exp: number };
 
-function secret(): string {
-  const s = process.env.SESSION_SECRET;
-  if (!s) throw new Error("SESSION_SECRET manquante. Generer : openssl rand -base64 32");
-  return s;
-}
-
 const signature = (corps: string) =>
-  createHmac("sha256", secret()).update(corps).digest("base64url");
+  createHmac("sha256", secretSignature()).update(corps).digest("base64url");
 
 /**
  * Session dans un cookie signe plutot qu'en base : il n'y a rien a revoquer

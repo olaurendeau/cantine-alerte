@@ -1,4 +1,4 @@
-import { ErreurIdentifiants, ErreurTemporaire } from "./portail/auth.ts";
+import { ErreurIdentifiants, ErreurStructure, ErreurTemporaire } from "./portail/auth.ts";
 import type { Logger } from "./portail/types.ts";
 import { silencieux } from "./portail/types.ts";
 
@@ -29,12 +29,18 @@ export type OptionsReessai = {
  * - identifiants refuses : reessayer ne peut pas reussir et enchainer les
  *   tentatives risque de faire verrouiller le compte du parent ;
  * - 429 : le portail limite deja le debit, insister prolonge le blocage. On
- *   abandonne pour cette execution et on repassera au prochain rappel.
+ *   abandonne pour cette execution et on repassera au prochain rappel ;
+ * - structure illisible : le portail a repondu, mais son HTML ou son JSON a
+ *   change. La reponse sera identique au coup suivant, et chaque tentative
+ *   refait les quatre sauts de connexion — donc pousse vers le 429 qu'on
+ *   s'applique par ailleurs a eviter.
  *
  * Les 5xx et les erreurs reseau, elles, meritent un nouvel essai.
  */
 export const nePasRejouer = (e: unknown): boolean =>
-  e instanceof ErreurIdentifiants || (e instanceof ErreurTemporaire && e.statut === 429);
+  e instanceof ErreurIdentifiants ||
+  e instanceof ErreurStructure ||
+  (e instanceof ErreurTemporaire && e.statut === 429);
 
 const dormir = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

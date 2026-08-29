@@ -1,4 +1,4 @@
-import { API } from "./auth.ts";
+import { API, ErreurStructure, refuserSiIndisponible } from "./auth.ts";
 import { ajouter, iso, jourDepuisIso, lundiDe } from "./dates.ts";
 import type { Session } from "./session.ts";
 import type { Cible, ConfigPortail, Logger, Pointage } from "./types.ts";
@@ -60,8 +60,27 @@ export async function getPrestations(
     body: JSON.stringify({ type_pointage: "R", date_start: iso(debut), date_end: iso(fin) }),
   });
   const txt = await res.text();
-  if (!res.ok) throw new Error(`prestations HTTP ${res.status} : ${txt.slice(0, 300)}`);
-  return JSON.parse(txt);
+  // Meme classification qu'a la connexion : un 429 ne doit pas etre rejoue
+  // (insister prolonge le blocage par IP), un 5xx merite un nouvel essai.
+  refuserSiIndisponible(res.status, "la lecture des prestations");
+  if (!res.ok) {
+    // Tout le reste (401, 403, 404) rendra la meme chose au coup suivant, et
+    // chaque tentative refait les quatre sauts de connexion : trois essais
+    // coutent douze requetes depuis la meme IP pour rien, ce qui pousse
+    // justement vers le 429 qu'on s'applique a eviter.
+    throw new ErreurStructure(
+      `prestations HTTP ${res.status}, statut inattendu : ${txt.slice(0, 300)}`,
+    );
+  }
+  try {
+    return JSON.parse(txt);
+  } catch {
+    // Un 200 dont le corps n'est pas du JSON : page de maintenance ou portail
+    // interstitiel. Rejouer donnerait la meme chose.
+    throw new ErreurStructure(
+      `Reponse /api/adulte/prestations non JSON (HTTP ${res.status}) : ${txt.slice(0, 200)}`,
+    );
+  }
 }
 
 /**
@@ -71,7 +90,7 @@ export async function getPrestations(
 function pointages(payload: Payload): Pointage[] {
   const d = payload?.data;
   if (!d || typeof d.pointages !== "object") {
-    throw new Error("Structure inattendue : data.pointages absent. Le portail a change.");
+    throw new ErreurStructure("Structure inattendue : data.pointages absent. Le portail a change.");
   }
   return Object.values(d.pointages);
 }
@@ -117,7 +136,7 @@ export function analyser(payload: Payload, cfg: ConfigPortail, debut: Date, fin:
     const offertes = Object.values(payload?.data?.prestations ?? {})
       .map((o) => `${o?.prestation?.code} (${o?.prestation?.libelle})`)
       .join(", ");
-    throw new Error(
+    throw new ErreurStructure(
       `Aucune prestation ne correspond a ${cfg.prestation}. Prestations offertes : ${offertes}.`,
     );
   }

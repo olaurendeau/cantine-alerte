@@ -19,6 +19,7 @@
     "db:pousser": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test": "node --test tests/*.test.ts",
+    "test:tz": "for tz in UTC Europe/Paris Pacific/Auckland America/Los_Angeles; do echo \"== TZ=$tz\" && TZ=$tz node --test tests/dates.test.ts || exit 1; done",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

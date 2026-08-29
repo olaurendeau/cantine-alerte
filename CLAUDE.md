@@ -15,7 +15,9 @@ Feuille de route :
   calé dessus et **recoupé écran par écran** avec l'UI du portail (`docs/screenshots-ui/`), règle de
   blocage déduite des données. Restent non observés dans l'API deux états que la légende annonce :
   « Pré-réservé » et « En attente et bloqué » — l'avertissement sur état non répertorié les
-  signalera dès leur première apparition.
+  signalera dès leur première apparition. Il remonte dans les journaux du cron et dans le champ
+  `etatsNonRepertories` de la réponse de `/api/cron`, pas seulement dans le CLI : le cron est le
+  seul des deux à tourner tous les jours.
 - **Phase 2 — faite.** App Next.js : inscription par lien magique, réglages (identifiants portail,
   destinataires multiples, jours de rappel), cron quotidien, envoi par Brevo, page d'administration.
 
@@ -27,7 +29,8 @@ explicites dans les imports). Next 16, Drizzle, Postgres.
 ```bash
 cp .env.example .env
 docker compose up --build   # stack complète : db + migrations + app sur :3000
-npm test                    # tests unitaires (dates, retry, crypto)
+npm test                    # tests unitaires (analyser, dates, décision, retry, crypto)
+npm run test:tz             # tests de dates sous UTC, Paris, Auckland, Los Angeles
 npm run typecheck
 npm run db:migrer           # applique drizzle/*.sql
 npm run db:generer          # génère une migration après modif du schéma
@@ -224,23 +227,74 @@ La mise en forme n'appartient pas à `lib/portail`, qui ne connaît que le porta
 - **`lib/crypto.ts`** — AES-256-GCM, clé en variable d'environnement, **AAD = `parent_id`** pour
   qu'un chiffré recopié sur une autre ligne soit rejeté.
 - **`lib/auth/`** — lien magique (seul le hash du jeton est stocké) et session en cookie signé.
+  `SESSION_SECRET` signe les deux, plus les liens de désabonnement : sa longueur est contrôlée au
+  même titre que celle de `CANTINE_CLE_CHIFFREMENT`, une valeur courte laisserait tout forger.
 
 Points de conception qui ont une raison d'être :
 
-- **Anti-doublon par contrainte d'unicité** sur `envois(parent_id, semaine_visee, jours_avant)`.
-  L'insertion `onConflictDoNothing()` ne rend aucune ligne si le rappel est déjà parti — le mail
+- **Anti-doublon par contrainte d'unicité** sur `envois(parent_id, semaine_visee, jours_avant,
+  type)`. L'insertion `onConflictDoNothing()` ne rend aucune ligne si le message est déjà parti — il
   n'est alors pas envoyé. C'est ce qui rend `/api/cron` rejouable sans risque, et donc le filet
-  GitHub Actions inoffensif.
+  GitHub Actions inoffensif. `type` fait partie de la clé : sans lui, une confirmation posée à 16 h
+  occuperait le créneau et **étoufferait le rappel** que le passage de 19 h déclencherait si une
+  réservation venait d'être annulée — exactement le cas que le filet est censé rattraper.
+  L'autre sens, lui, ne doit **pas** passer : `traiterParent` refuse explicitement une confirmation
+  quand un rappel est déjà parti le même jour pour la même semaine. Sans ce garde, le parent qui
+  réserve après son rappel de 16 h recevrait à 19 h un second message lui annonçant que tout va
+  bien. La clé d'unicité ne peut pas s'en charger, puisque `type` en fait justement partie.
+- ⚠️ **La ligne d'envoi est posée avant l'expédition, et libérée si celle-ci échoue.** L'ordre est
+  volontaire : la ligne est le verrou anti-doublon, elle doit exister avant l'envoi. Mais la laisser
+  après un échec ferait conclure au rejeu que le message est déjà parti, et transformerait une panne
+  passagère de l'expéditeur en **rappel définitivement perdu** — le seul échec vraiment grave de ce
+  service. D'où le `db.delete(envois)` compensatoire dans `traiterParent`. Ne pas « simplifier » en
+  déplaçant l'insertion après l'envoi : deux exécutions concurrentes enverraient alors deux mails.
+  Le raisonnement vaut aussi pour un envoi **partiel** : `envoyerBrevo` classe chaque échec par
+  adresse en rattrapable (429, 5xx, réseau) ou définitif (4xx, adresse refusée). Un échec
+  rattrapable lève, donc libère le verrou et laisse le rejeu du soir retenter ; un échec définitif
+  se contente d'un `console.error`, sinon une faute de frappe dans les destinataires ferait
+  renvoyer le message à tout le foyer à chaque passage.
+- ⚠️ **Un échec d'expédition n'est pas un échec du portail.** Il rend le statut `echec_envoi` et ne
+  repasse **pas** par `echec()` / `alerter()` : le portail a répondu, `succes()` vient de le
+  consigner, et l'y renvoyer écraserait ce succès par une « dernière erreur » citant l'expéditeur,
+  afficherait au parent une panne inexistante et remettrait `alerte_echec_le` à zéro à chaque cycle
+  — soit une alerte par jour au lieu d'une par série. Prévenir par mail n'aurait de toute façon
+  aucune chance d'aboutir : c'est l'expéditeur qui est en panne. Le signal passe par le décompte
+  par statut de `/api/cron` et par les journaux Vercel.
 - **Le throttling du portail s'applique par adresse IP**, pas par compte. Constaté en conditions
   réelles : trois connexions ratées d'affilée ont fait retourner un `429` au compte suivant, pourtant
   valide. D'où (a) la pause `CANTINE_PAUSE_MS` entre familles dans la boucle du cron, (b)
   `ErreurTemporaire` distincte d'`ErreurIdentifiants`, (c) aucun réessai sur un `429` — insister
-  prolonge le blocage.
+  prolonge le blocage. Le `429` est classé aux **deux** endroits qui interrogent le portail :
+  `login` et `getPrestations`. ⚠️ Le classement se fait par `refuserSiIndisponible()`, appelé
+  **avant toute lecture de la réponse**, aux quatre sauts de connexion comme sur les prestations.
+  L'ordre n'est pas cosmétique : une page d'erreur 502 ne contient aucun JWT, ce qui se lisait
+  sinon comme un changement de HTML — donc une `ErreurStructure`, jamais rejouée — et transformait
+  un hoquet passager du portail en rappel perdu pour la journée.
+- **Trois familles d'erreurs, trois politiques de réessai** (`nePasRejouer`, `lib/reessayer.ts`) :
+  `ErreurIdentifiants` (jamais rejouée — insister ferait verrouiller le compte), `ErreurTemporaire`
+  (rejouée sur 5xx, jamais sur 429), `ErreurStructure` (jamais rejouée). Cette dernière couvre tout
+  ce qui relève du parsing : champ caché absent, JSON illisible, `data.pointages` manquant, aucune
+  prestation correspondante — plus les statuts inattendus sur un point d'entrée documenté (401,
+  403, 404). La réponse sera identique au coup suivant, et chaque tentative refait les quatre sauts
+  de connexion — donc pousse vers le `429` qu'on s'applique à éviter.
+- **Tous les appels sortants ont un délai maximal** (`AbortSignal.timeout`) : 15 s par requête vers
+  le portail, 10 s vers Brevo. `fetch` attend indéfiniment par défaut ; le cycle est séquentiel dans
+  une fonction plafonnée à 300 s, donc une seule connexion qui pend priverait de rappel toutes les
+  familles suivantes, sans laisser de trace. Le délai par requête ne suffit pas à borner une
+  famille : la connexion fait quatre sauts et `goSuivi` en suit jusqu'à cinq de plus, chacun
+  repartant de zéro, soit 150 s au pire. D'où le **budget de session** de 45 s, un seul signal créé
+  par `nouvelleSession()` et combiné par `AbortSignal.any()` à chaque requête.
+- **Une famille en échec n'interrompt jamais le cycle.** `traiterParent` est encadré dans la boucle,
+  et `alerter()` est entièrement défensif : c'est du code qui s'exécute déjà dans la branche
+  d'erreur, souvent parce que l'expéditeur est en panne. Un mail d'alerte perdu est bénin, un
+  rappel perdu ne l'est pas.
 - **Ne désactiver un compte que sur identifiants refusés.** Une panne du portail ou un `429` ne doit
   jamais suspendre un compte valide, sinon une indisponibilité couperait le service pour tout le
   monde. Le mail d'échec technique dit d'ailleurs explicitement au parent que ses identifiants ne
   sont pas en cause.
-- **Une seule alerte par série d'échecs** (`alerte_echec_le`, remis à `null` à la première réussite).
+- **Une seule alerte par série d'échecs** (`alerte_echec_le`, remis à `null` à la première
+  réussite). Le drapeau n'est posé que si le mail au parent est **effectivement parti** : sinon un
+  expéditeur en panne ferait taire l'alerte pour toute la série.
 - **Les rappels sont exprimés en jours de semaine** dans l'UI (`libelleJourAvant`) : l'échéance étant
   toujours un lundi, J-1 = dimanche et J-3 = vendredi. « samedi » parle à un parent, « J-2 » non.
   Plage utile 0..6 — au-delà on retomberait sur l'échéance précédente.
@@ -250,8 +304,42 @@ Points de conception qui ont une raison d'être :
   pour que la liste vide — donc le défaut — vaille « confirmer partout », et qu'ajouter un jour de
   rappel n'oblige pas à penser à activer sa confirmation. Un manquant déclenche toujours un rappel,
   même un jour marqué silencieux : le silence ne concerne que les confirmations.
+- ⚠️ **« Rien à confirmer » se mesure aux repas réservés, jamais au nombre de pointages.**
+  `decider()` rend `silence` quand `manquants === 0` **et** `reserves === 0` : pendant les vacances
+  confirmer annoncerait au parent une semaine couverte pour zéro repas. Le piège est que le portail
+  ne renvoie pas une fenêtre vide pendant les vacances — il renvoie chaque jour en
+  `ETAT_PRESTATION_FERMEE` et `disabled`. Compter `retenus` ferait donc croire à une semaine pleine,
+  et le garde ne se déclencherait jamais : c'est le bug qu'un test de bout en bout garde désormais
+  dans `tests/prestations.test.ts`. Le statut `rien_a_verifier` distingue ce cas de
+  `rien_a_signaler` dans les journaux, et `verifierMaintenant` fait la même distinction — c'est
+  l'écran où le parent vérifie que le service fonctionne.
 - **La page admin ne charge jamais `mdp_chiffre` ni `portail_email`.** L'administrateur n'a aucun
   besoin des identifiants des familles : la requête ne les sélectionne pas.
+- ⚠️ **La réponse de `/api/cron` est agrégée, sans aucune adresse.** Elle transite par le filet
+  GitHub Actions, dont les journaux sont publics puisque le dépôt l'est : y laisser le détail
+  nominatif publierait la liste des familles inscrites. Le détail reste dans `console.log`, donc
+  dans les journaux Vercel, qui sont privés.
+- **Les demandes de lien magique sont bornées** (`lib/auth/liens.ts`) : au plus 10 jetons vivants
+  par compte et 20 émissions par minute au global. La page est publique et chaque appel envoie un
+  mail ; sans plafond elle sert de relais d'envoi. Les deux compteurs se lisent sur
+  `liens_magiques`, sans table ni service supplémentaire — un jeton n'a pas de date de création,
+  mais `expire_le` vaut toujours création + 20 min, la fenêtre s'en déduit. Le refus est
+  **silencieux** : la page affiche le même message quoi qu'il arrive, sinon la réponse révélerait
+  quelles adresses sont inscrites. C'est précisément ce silence qui interdit de serrer le plafond
+  par compte : un lien non cliqué reste vivant 20 min, un parent dont le mail tombe en indésirables
+  redemande deux ou trois fois, et un plafond à 3 lui refusait le quatrième essai en continuant
+  d'afficher « un lien vient de vous être envoyé ». ⚠️ **Les deux plafonds se vérifient avant toute
+  écriture** : créer le compte d'abord laissait un appelant anonyme remplir `parents` à volonté,
+  une ligne par requête, tout en étant refusé à l'envoi.
+- **`next.config.ts` pose les en-têtes de sécurité** (CSP, HSTS, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy`). `script-src` et `style-src` gardent `'unsafe-inline'` :
+  Next injecte son script d'hydratation en ligne, s'en affranchir demanderait un middleware à
+  nonces. L'essentiel de la valeur est ailleurs — `frame-ancestors` et `form-action`.
+  `'unsafe-eval'` n'est ajouté qu'en développement, où React s'en sert pour ses messages d'erreur
+  enrichis : `headers()` s'applique aussi sous `next dev`, et sans cette exception la seule boucle
+  d'itération documentée ici tourne avec une console pleine de violations CSP.
+- **La CI (`.github/workflows/ci.yml`) joue `typecheck`, `test` et `test:tz` à chaque poussée.**
+  Les tests sont purs : ni base, ni réseau, ni secret, donc rien à configurer.
 
 ## Les mails
 
@@ -280,6 +368,13 @@ Contraintes de rendu à ne pas « simplifier » :
 `node scripts/apercu-mail.ts` rend les huit variantes dans `apercu/`, avec un index qui les compare
 à 375 px et 600 px. Un aperçu navigateur valide la mise en page, **pas** la compatibilité :
 `scripts/tester-mail.ts` envoie un vrai gabarit pour relecture dans un client réel.
+
+**Lien de connexion** : le mail pointe vers `/connexion/verifier`, une page qui **ne consomme
+rien** au chargement et propose un bouton. Les passerelles de sécurité des messageries (Outlook Safe
+Links, Proofpoint) suivent les liens des mails pour les inspecter : un jeton à usage unique brûlé
+par un simple `GET` le serait par un robot avant même que le parent ne clique, et celui-ci lirait
+« lien invalide » sans comprendre. `/api/auth/verifier` subsiste et redirige vers cette page, pour
+les mails déjà partis. Même raisonnement que pour le désabonnement ci-dessous.
 
 **Désabonnement** : lien signé HMAC (`lib/auth/desabonnement.ts`), sans ligne en base. La page
 `/desabonnement` confirme par un bouton au lieu d'agir au chargement — les passerelles de sécurité
