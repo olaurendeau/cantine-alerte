@@ -238,28 +238,52 @@ Points de conception qui ont une raison d'être :
   GitHub Actions inoffensif. `type` fait partie de la clé : sans lui, une confirmation posée à 16 h
   occuperait le créneau et **étoufferait le rappel** que le passage de 19 h déclencherait si une
   réservation venait d'être annulée — exactement le cas que le filet est censé rattraper.
+  L'autre sens, lui, ne doit **pas** passer : `traiterParent` refuse explicitement une confirmation
+  quand un rappel est déjà parti le même jour pour la même semaine. Sans ce garde, le parent qui
+  réserve après son rappel de 16 h recevrait à 19 h un second message lui annonçant que tout va
+  bien. La clé d'unicité ne peut pas s'en charger, puisque `type` en fait justement partie.
 - ⚠️ **La ligne d'envoi est posée avant l'expédition, et libérée si celle-ci échoue.** L'ordre est
   volontaire : la ligne est le verrou anti-doublon, elle doit exister avant l'envoi. Mais la laisser
   après un échec ferait conclure au rejeu que le message est déjà parti, et transformerait une panne
   passagère de l'expéditeur en **rappel définitivement perdu** — le seul échec vraiment grave de ce
   service. D'où le `db.delete(envois)` compensatoire dans `traiterParent`. Ne pas « simplifier » en
   déplaçant l'insertion après l'envoi : deux exécutions concurrentes enverraient alors deux mails.
+  Le raisonnement vaut aussi pour un envoi **partiel** : `envoyerBrevo` classe chaque échec par
+  adresse en rattrapable (429, 5xx, réseau) ou définitif (4xx, adresse refusée). Un échec
+  rattrapable lève, donc libère le verrou et laisse le rejeu du soir retenter ; un échec définitif
+  se contente d'un `console.error`, sinon une faute de frappe dans les destinataires ferait
+  renvoyer le message à tout le foyer à chaque passage.
+- ⚠️ **Un échec d'expédition n'est pas un échec du portail.** Il rend le statut `echec_envoi` et ne
+  repasse **pas** par `echec()` / `alerter()` : le portail a répondu, `succes()` vient de le
+  consigner, et l'y renvoyer écraserait ce succès par une « dernière erreur » citant l'expéditeur,
+  afficherait au parent une panne inexistante et remettrait `alerte_echec_le` à zéro à chaque cycle
+  — soit une alerte par jour au lieu d'une par série. Prévenir par mail n'aurait de toute façon
+  aucune chance d'aboutir : c'est l'expéditeur qui est en panne. Le signal passe par le décompte
+  par statut de `/api/cron` et par les journaux Vercel.
 - **Le throttling du portail s'applique par adresse IP**, pas par compte. Constaté en conditions
   réelles : trois connexions ratées d'affilée ont fait retourner un `429` au compte suivant, pourtant
   valide. D'où (a) la pause `CANTINE_PAUSE_MS` entre familles dans la boucle du cron, (b)
   `ErreurTemporaire` distincte d'`ErreurIdentifiants`, (c) aucun réessai sur un `429` — insister
   prolonge le blocage. Le `429` est classé aux **deux** endroits qui interrogent le portail :
-  `login` et `getPrestations`.
+  `login` et `getPrestations`. ⚠️ Le classement se fait par `refuserSiIndisponible()`, appelé
+  **avant toute lecture de la réponse**, aux quatre sauts de connexion comme sur les prestations.
+  L'ordre n'est pas cosmétique : une page d'erreur 502 ne contient aucun JWT, ce qui se lisait
+  sinon comme un changement de HTML — donc une `ErreurStructure`, jamais rejouée — et transformait
+  un hoquet passager du portail en rappel perdu pour la journée.
 - **Trois familles d'erreurs, trois politiques de réessai** (`nePasRejouer`, `lib/reessayer.ts`) :
   `ErreurIdentifiants` (jamais rejouée — insister ferait verrouiller le compte), `ErreurTemporaire`
   (rejouée sur 5xx, jamais sur 429), `ErreurStructure` (jamais rejouée). Cette dernière couvre tout
   ce qui relève du parsing : champ caché absent, JSON illisible, `data.pointages` manquant, aucune
-  prestation correspondante. La réponse sera identique au coup suivant, et chaque tentative refait
-  les quatre sauts de connexion — donc pousse vers le `429` qu'on s'applique à éviter.
-- **Tous les appels sortants ont un délai maximal** (`AbortSignal.timeout`) : 15 s vers le portail,
-  10 s vers Brevo. `fetch` attend indéfiniment par défaut ; le cycle est séquentiel dans une
-  fonction plafonnée à 300 s, donc une seule connexion qui pend priverait de rappel toutes les
-  familles suivantes, sans laisser de trace.
+  prestation correspondante — plus les statuts inattendus sur un point d'entrée documenté (401,
+  403, 404). La réponse sera identique au coup suivant, et chaque tentative refait les quatre sauts
+  de connexion — donc pousse vers le `429` qu'on s'applique à éviter.
+- **Tous les appels sortants ont un délai maximal** (`AbortSignal.timeout`) : 15 s par requête vers
+  le portail, 10 s vers Brevo. `fetch` attend indéfiniment par défaut ; le cycle est séquentiel dans
+  une fonction plafonnée à 300 s, donc une seule connexion qui pend priverait de rappel toutes les
+  familles suivantes, sans laisser de trace. Le délai par requête ne suffit pas à borner une
+  famille : la connexion fait quatre sauts et `goSuivi` en suit jusqu'à cinq de plus, chacun
+  repartant de zéro, soit 150 s au pire. D'où le **budget de session** de 45 s, un seul signal créé
+  par `nouvelleSession()` et combiné par `AbortSignal.any()` à chaque requête.
 - **Une famille en échec n'interrompt jamais le cycle.** `traiterParent` est encadré dans la boucle,
   et `alerter()` est entièrement défensif : c'est du code qui s'exécute déjà dans la branche
   d'erreur, souvent parce que l'expéditeur est en panne. Un mail d'alerte perdu est bénin, un
@@ -280,26 +304,40 @@ Points de conception qui ont une raison d'être :
   pour que la liste vide — donc le défaut — vaille « confirmer partout », et qu'ajouter un jour de
   rappel n'oblige pas à penser à activer sa confirmation. Un manquant déclenche toujours un rappel,
   même un jour marqué silencieux : le silence ne concerne que les confirmations.
-- ⚠️ **« Aucun pointage » n'est pas « tout est réservé ».** `decider()` rend `silence` dès que
-  `retenus === 0` : pendant les vacances le portail ne propose rien, et confirmer annoncerait au
-  parent une semaine couverte pour zéro repas. Le statut `rien_a_verifier` distingue ce cas de
-  `rien_a_signaler` dans les journaux.
+- ⚠️ **« Rien à confirmer » se mesure aux repas réservés, jamais au nombre de pointages.**
+  `decider()` rend `silence` quand `manquants === 0` **et** `reserves === 0` : pendant les vacances
+  confirmer annoncerait au parent une semaine couverte pour zéro repas. Le piège est que le portail
+  ne renvoie pas une fenêtre vide pendant les vacances — il renvoie chaque jour en
+  `ETAT_PRESTATION_FERMEE` et `disabled`. Compter `retenus` ferait donc croire à une semaine pleine,
+  et le garde ne se déclencherait jamais : c'est le bug qu'un test de bout en bout garde désormais
+  dans `tests/prestations.test.ts`. Le statut `rien_a_verifier` distingue ce cas de
+  `rien_a_signaler` dans les journaux, et `verifierMaintenant` fait la même distinction — c'est
+  l'écran où le parent vérifie que le service fonctionne.
 - **La page admin ne charge jamais `mdp_chiffre` ni `portail_email`.** L'administrateur n'a aucun
   besoin des identifiants des familles : la requête ne les sélectionne pas.
 - ⚠️ **La réponse de `/api/cron` est agrégée, sans aucune adresse.** Elle transite par le filet
   GitHub Actions, dont les journaux sont publics puisque le dépôt l'est : y laisser le détail
   nominatif publierait la liste des familles inscrites. Le détail reste dans `console.log`, donc
   dans les journaux Vercel, qui sont privés.
-- **Les demandes de lien magique sont bornées** (`lib/auth/liens.ts`) : au plus 3 jetons vivants par
-  compte et 20 émissions par minute au global. La page est publique et chaque appel envoie un mail ;
-  sans plafond elle sert de relais d'envoi. Les deux compteurs se lisent sur `liens_magiques`, sans
-  table ni service supplémentaire — un jeton n'a pas de date de création, mais `expire_le` vaut
-  toujours création + 20 min, la fenêtre s'en déduit. Le refus est **silencieux** : la page affiche
-  le même message quoi qu'il arrive, sinon la réponse révélerait quelles adresses sont inscrites.
+- **Les demandes de lien magique sont bornées** (`lib/auth/liens.ts`) : au plus 10 jetons vivants
+  par compte et 20 émissions par minute au global. La page est publique et chaque appel envoie un
+  mail ; sans plafond elle sert de relais d'envoi. Les deux compteurs se lisent sur
+  `liens_magiques`, sans table ni service supplémentaire — un jeton n'a pas de date de création,
+  mais `expire_le` vaut toujours création + 20 min, la fenêtre s'en déduit. Le refus est
+  **silencieux** : la page affiche le même message quoi qu'il arrive, sinon la réponse révélerait
+  quelles adresses sont inscrites. C'est précisément ce silence qui interdit de serrer le plafond
+  par compte : un lien non cliqué reste vivant 20 min, un parent dont le mail tombe en indésirables
+  redemande deux ou trois fois, et un plafond à 3 lui refusait le quatrième essai en continuant
+  d'afficher « un lien vient de vous être envoyé ». ⚠️ **Les deux plafonds se vérifient avant toute
+  écriture** : créer le compte d'abord laissait un appelant anonyme remplir `parents` à volonté,
+  une ligne par requête, tout en étant refusé à l'envoi.
 - **`next.config.ts` pose les en-têtes de sécurité** (CSP, HSTS, `X-Frame-Options`,
   `Referrer-Policy`, `Permissions-Policy`). `script-src` et `style-src` gardent `'unsafe-inline'` :
   Next injecte son script d'hydratation en ligne, s'en affranchir demanderait un middleware à
   nonces. L'essentiel de la valeur est ailleurs — `frame-ancestors` et `form-action`.
+  `'unsafe-eval'` n'est ajouté qu'en développement, où React s'en sert pour ses messages d'erreur
+  enrichis : `headers()` s'applique aussi sous `next dev`, et sans cette exception la seule boucle
+  d'itération documentée ici tourne avec une console pleine de violations CSP.
 - **La CI (`.github/workflows/ci.yml`) joue `typecheck`, `test` et `test:tz` à chaque poussée.**
   Les tests sont purs : ni base, ni réseau, ni secret, donc rien à configurer.
 

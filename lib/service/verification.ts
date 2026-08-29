@@ -47,9 +47,16 @@ const PAUSE_DEFAUT_MS = 3000;
  * Une valeur non numerique donnerait NaN, donc `setTimeout(NaN)` : la pause
  * anti-throttling disparaitrait sans un mot, et on ne le decouvrirait qu'en
  * voyant des 429 frapper des comptes valides.
+ *
+ * Une chaine vide est traitee comme une absence, et non comme un zero : c'est
+ * ce que rend `Number("")`, et c'est le resultat normal d'un .env recopie puis
+ * vide, ou d'une variable declaree sans valeur dans le tableau de bord Vercel.
+ * Le defaut vaut mieux qu'une suppression silencieuse de la pause.
  */
-function pauseConfiguree(brut = process.env.CANTINE_PAUSE_MS): number {
-  const n = Number(brut ?? PAUSE_DEFAUT_MS);
+export function pauseConfiguree(brut = process.env.CANTINE_PAUSE_MS): number {
+  const texte = brut?.trim();
+  if (!texte) return PAUSE_DEFAUT_MS;
+  const n = Number(texte);
   return Number.isFinite(n) && n >= 0 ? n : PAUSE_DEFAUT_MS;
 }
 
@@ -64,6 +71,8 @@ export type StatutParent =
   /** Le portail ne propose rien sur la fenetre : vacances, hors annee scolaire. */
   | "rien_a_verifier"
   | "deja_notifie"
+  /** Verification faite, message compose, mais l'expediteur n'a pas pu envoyer. */
+  | "echec_envoi"
   | "identifiants_invalides"
   | "echec_technique";
 
@@ -224,7 +233,7 @@ async function traiterParent(
 
     await succes(compte.parentId);
 
-    const { inconnus, retenus } = resultat.analyse;
+    const { inconnus } = resultat.analyse;
     if (inconnus.length) {
       // Traites comme non reserves, donc sans risque de rappel manquant, mais
       // a classer dans ETATS_RESERVES ou ETATS_NON_RESERVES. Le CLI le signale
@@ -236,19 +245,43 @@ async function traiterParent(
     }
 
     const manquants = resultat.analyse.manquants.length;
+    const reserves = resultat.analyse.reserves.length;
     const decision = decider({
       manquants,
-      retenus: retenus.length,
+      reserves,
       joursRestants: ctx.restants,
       joursSilencieux: compte.joursSilencieux ?? [],
     });
 
     if (decision === "silence") {
-      // Aucun pointage du tout : periode fermee cote portail. Le distinguer de
-      // "tout est reserve" evite d'annoncer au parent une semaine couverte
-      // pendant les vacances, et rend le cas lisible dans les logs.
-      const statut = retenus.length === 0 ? "rien_a_verifier" : "rien_a_signaler";
+      // Rien a reserver et rien de reserve : periode fermee cote portail. Le
+      // distinguer de "tout est reserve" evite d'annoncer au parent une semaine
+      // couverte pendant les vacances, et rend le cas lisible dans les logs.
+      const statut = manquants === 0 && reserves === 0 ? "rien_a_verifier" : "rien_a_signaler";
       return { ...base, statut, manquants: 0, ...(inconnus.length ? { inconnus } : {}) };
+    }
+
+    // Une confirmation ne doit pas suivre un rappel deja parti le meme jour
+    // pour la meme semaine : le parent qui vient de reserver recevrait, trois
+    // heures apres son rappel, un second message lui annoncant que tout va
+    // bien. La cle d'unicite ne l'en empeche pas, puisque `type` en fait
+    // partie — c'est justement ce qui permet au rappel de passer apres une
+    // confirmation, le sens qui, lui, rattrape une annulation de derniere
+    // minute.
+    if (decision === "confirmation") {
+      const [rappelParti] = await db
+        .select({ id: envois.id })
+        .from(envois)
+        .where(
+          and(
+            eq(envois.parentId, compte.parentId),
+            eq(envois.semaineVisee, iso(ctx.semaine)),
+            eq(envois.joursAvant, ctx.restants),
+            eq(envois.type, "rappel"),
+          ),
+        )
+        .limit(1);
+      if (rappelParti) return { ...base, statut: "deja_notifie", manquants };
     }
 
     // L'anti-doublon est porte par la contrainte d'unicite : si l'insertion ne
@@ -308,7 +341,17 @@ async function traiterParent(
             `(${(menage as Error).message})`,
         );
       }
-      throw e;
+      // Ne pas repasser par la branche d'erreur du portail. Celui-ci a
+      // parfaitement repondu et `succes()` vient de le consigner : y renvoyer
+      // ecraserait ce succes par une "derniere erreur" mentionnant l'expediteur,
+      // afficherait au parent une panne du portail qui n'existe pas, et surtout
+      // remettrait `alerte_echec_le` a zero a chaque cycle — donc une alerte par
+      // jour au lieu d'une par serie. Prevenir le parent par mail n'aurait de
+      // toute facon aucune chance d'aboutir : c'est l'expediteur qui est en
+      // panne. Le statut remonte dans le resume du cron et dans les journaux.
+      const echecEnvoi = (e as Error).message;
+      ctx.trace(`parent ${compte.parentId} : expedition impossible (${echecEnvoi})`);
+      return { ...base, statut: "echec_envoi", manquants, detail: echecEnvoi };
     }
 
     return {

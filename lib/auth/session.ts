@@ -1,36 +1,15 @@
 import { createHmac } from "node:crypto";
 import { cookies } from "next/headers";
 import { egaliteConstante } from "../crypto.ts";
+import { secretSignature } from "./secret.ts";
 
 const COOKIE = "cantine_session";
 const DUREE_JOURS = 30;
 
 type Charge = { parentId: string; email: string; exp: number };
 
-/**
- * Cle de signature des cookies de session ET des jetons de desabonnement.
- *
- * La longueur est controlee comme celle de CANTINE_CLE_CHIFFREMENT : une valeur
- * courte passerait sans bruit et laisserait forger sessions et desabonnements.
- * Une variable mal renseignee doit echouer au demarrage, pas se deviner apres
- * coup.
- */
-const LONGUEUR_MIN = 32;
-
-function secret(): string {
-  const s = process.env.SESSION_SECRET;
-  if (!s) throw new Error("SESSION_SECRET manquante. Generer : openssl rand -base64 32");
-  if (s.length < LONGUEUR_MIN) {
-    throw new Error(
-      `SESSION_SECRET trop courte (${s.length} caracteres, minimum ${LONGUEUR_MIN}). ` +
-        "Generer : openssl rand -base64 32",
-    );
-  }
-  return s;
-}
-
 const signature = (corps: string) =>
-  createHmac("sha256", secret()).update(corps).digest("base64url");
+  createHmac("sha256", secretSignature()).update(corps).digest("base64url");
 
 /**
  * Session dans un cookie signe plutot qu'en base : il n'y a rien a revoquer

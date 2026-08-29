@@ -95,7 +95,7 @@ Choisissez une date dont la semaine cible n'est pas encore réservée pour voir 
 |---|---|
 | `DATABASE_URL` | Postgres. En local, celui du `docker compose`. |
 | `CANTINE_CLE_CHIFFREMENT` | Clé AES 32 octets base64 (`openssl rand -base64 32`). **Une clé différente par environnement.** |
-| `SESSION_SECRET` | Signature des cookies de session **et** des liens de désabonnement. 32 caractères minimum, contrôlé au démarrage. |
+| `SESSION_SECRET` | Signature des cookies de session **et** des liens de désabonnement. 32 caractères minimum, vérifié à la première signature — ouverture de session ou construction d'un lien de désabonnement. |
 | `CRON_SECRET` | Protège `/api/cron`. Vercel l'envoie en `Authorization: Bearer`. |
 | `APP_URL` | Base publique, sert à construire les liens de connexion. |
 | `ADMIN_EMAILS` | Adresses des administrateurs, séparées par des virgules. |

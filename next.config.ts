@@ -27,13 +27,22 @@ const autonome = process.env.NEXT_SORTIE_AUTONOME === "1";
  * politique — frame-ancestors interdit l'enchassement, form-action empeche un
  * formulaire injecte de poster ailleurs, default-src coupe toute requete
  * sortante.
+ *
+ * 'unsafe-eval' n'est ajoute qu'en developpement : React s'en sert pour ses
+ * messages d'erreur enrichis et la reconstruction des piles cote serveur, et
+ * `headers()` s'applique aussi sous `next dev`. Sans cette exception, la seule
+ * boucle d'iteration documentee du projet tourne avec une console pleine de
+ * violations CSP et une superposition d'erreur degradee. La production, elle,
+ * n'en a aucun besoin.
  */
+const developpement = process.env.NODE_ENV === "development";
+
 const ENTETES = [
   {
     key: "Content-Security-Policy",
     value: [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",
+      `script-src 'self' 'unsafe-inline'${developpement ? " 'unsafe-eval'" : ""}`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
       "font-src 'self'",

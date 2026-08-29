@@ -1,4 +1,4 @@
-import { API, ErreurStructure, ErreurTemporaire } from "./auth.ts";
+import { API, ErreurStructure, refuserSiIndisponible } from "./auth.ts";
 import { ajouter, iso, jourDepuisIso, lundiDe } from "./dates.ts";
 import type { Session } from "./session.ts";
 import type { Cible, ConfigPortail, Logger, Pointage } from "./types.ts";
@@ -62,17 +62,16 @@ export async function getPrestations(
   const txt = await res.text();
   // Meme classification qu'a la connexion : un 429 ne doit pas etre rejoue
   // (insister prolonge le blocage par IP), un 5xx merite un nouvel essai.
-  if (res.status === 429) {
-    throw new ErreurTemporaire(
-      "429 : le portail limite le debit (throttling par adresse IP). " +
-        "Espacer les requetes et reessayer plus tard.",
-      429,
+  refuserSiIndisponible(res.status, "la lecture des prestations");
+  if (!res.ok) {
+    // Tout le reste (401, 403, 404) rendra la meme chose au coup suivant, et
+    // chaque tentative refait les quatre sauts de connexion : trois essais
+    // coutent douze requetes depuis la meme IP pour rien, ce qui pousse
+    // justement vers le 429 qu'on s'applique a eviter.
+    throw new ErreurStructure(
+      `prestations HTTP ${res.status}, statut inattendu : ${txt.slice(0, 300)}`,
     );
   }
-  if (res.status >= 500) {
-    throw new ErreurTemporaire(`Portail indisponible (HTTP ${res.status})`, res.status);
-  }
-  if (!res.ok) throw new Error(`prestations HTTP ${res.status} : ${txt.slice(0, 300)}`);
   try {
     return JSON.parse(txt);
   } catch {

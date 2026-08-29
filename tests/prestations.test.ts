@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { analyser, estReserve, type Payload } from "../lib/portail/prestations.ts";
+import { analyser, estReserve, getPrestations, type Payload } from "../lib/portail/prestations.ts";
+import { ErreurStructure, ErreurTemporaire } from "../lib/portail/auth.ts";
 import { jourDepuisIso } from "../lib/portail/dates.ts";
+import type { Session } from "../lib/portail/session.ts";
 import type { ConfigPortail, Pointage } from "../lib/portail/types.ts";
+import { nePasRejouer } from "../lib/reessayer.ts";
+import { decider } from "../lib/service/decision.ts";
 
 /**
  * Fixture calquee sur la structure observee en conditions reelles : pointages
@@ -207,5 +211,72 @@ test("un payload sans data.pointages est une erreur de structure", () => {
   assert.throws(
     () => analyser(sansPointages, config(), lundi, dimanche),
     /Structure inattendue : data.pointages absent/,
+  );
+});
+
+test("une semaine de vacances ne se confirme pas, malgre ses pointages", () => {
+  // Le piege que ce test garde : pendant les vacances le portail ne renvoie pas
+  // une fenetre vide, il renvoie chaque jour en ETAT_PRESTATION_FERMEE et
+  // `disabled`. Se fier au nombre de pointages ferait donc croire a une semaine
+  // pleine et enverrait a toutes les familles un "Rien a faire, tout est
+  // reserve" annoncant zero repas.
+  const fermes = ["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11"].map(
+    (date) => pointage({ date, code_etat: "ETAT_PRESTATION_FERMEE", etat: 100, disabled: true }),
+  );
+  const a = analyser(payload(fermes), config(), lundi, dimanche);
+
+  assert.equal(a.retenus.length, 5);
+  assert.equal(a.manquants.length, 0);
+  assert.equal(a.reserves.length, 0);
+  assert.equal(
+    decider({
+      manquants: a.manquants.length,
+      reserves: a.reserves.length,
+      joursRestants: 4,
+      joursSilencieux: [],
+    }),
+    "silence",
+  );
+});
+
+/** Session reduite a ce que lit getPrestations, sans sortir sur le reseau. */
+const sessionQuiRepond = (statut: number, corps: string): Session =>
+  ({ go: async () => new Response(corps, { status: statut }) }) as unknown as Session;
+
+test("un 429 sur les prestations est temporaire et n'est jamais rejoue", async () => {
+  // Insister prolonge le blocage par IP, qui frappe ensuite des comptes valides.
+  await assert.rejects(
+    () => getPrestations(config(), sessionQuiRepond(429, "trop de requetes"), "b", lundi, dimanche),
+    (e: unknown) => {
+      assert.ok(e instanceof ErreurTemporaire);
+      assert.equal(e.statut, 429);
+      assert.ok(nePasRejouer(e));
+      return true;
+    },
+  );
+});
+
+test("un 5xx sur les prestations est temporaire et merite un nouvel essai", async () => {
+  await assert.rejects(
+    () => getPrestations(config(), sessionQuiRepond(503, "maintenance"), "b", lundi, dimanche),
+    (e: unknown) => {
+      assert.ok(e instanceof ErreurTemporaire);
+      assert.ok(!nePasRejouer(e));
+      return true;
+    },
+  );
+});
+
+test("un statut inattendu sur les prestations n'est pas rejoue", async () => {
+  // 401, 403, 404 rendront la meme chose au coup suivant, et chaque tentative
+  // refait les quatre sauts de connexion : trois essais coutent douze requetes
+  // depuis la meme IP pour rien, ce qui pousse vers le 429 qu'on evite.
+  await assert.rejects(
+    () => getPrestations(config(), sessionQuiRepond(401, "non autorise"), "b", lundi, dimanche),
+    (e: unknown) => {
+      assert.ok(e instanceof ErreurStructure);
+      assert.ok(nePasRejouer(e));
+      return true;
+    },
   );
 });

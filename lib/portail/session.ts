@@ -15,6 +15,17 @@ const UA =
 const DELAI_MAX_MS = 15_000;
 
 /**
+ * Budget de la session entiere, en plus du delai par requete.
+ *
+ * Le delai par requete ne borne pas une famille : la connexion fait quatre
+ * sauts et goSuivi en suit jusqu'a cinq de plus, chacun repartant a zero. Au
+ * pire une seule famille tenait donc 150 s sur les 300 s de la fonction, ce que
+ * le commentaire ci-dessus promettait justement d'empecher. L'echeance part a
+ * la creation de la session, donc couvre connexion et lecture des prestations.
+ */
+const BUDGET_SESSION_MS = 45_000;
+
+/**
  * Rend une URL lisible dans les traces : masque les JWT (un token d'amorcage
  * fait plusieurs centaines de caracteres et n'a rien a faire dans un log) et
  * tronque le reste.
@@ -35,8 +46,14 @@ export type Session = ReturnType<typeof nouvelleSession>;
  * pot a cookies : c'est ce qui permet au cron d'iterer sur plusieurs familles
  * sans qu'une session fuite sur la suivante.
  */
-export function nouvelleSession(trace: Logger = silencieux) {
+export function nouvelleSession(
+  trace: Logger = silencieux,
+  { budgetMs = BUDGET_SESSION_MS }: { budgetMs?: number } = {},
+) {
   const jar = new Map<string, string>();
+  // Un seul signal pour toute la session : il court des la creation, donc le
+  // temps deja consomme par les sauts precedents n'est pas remis a zero.
+  const echeanceSession = AbortSignal.timeout(budgetMs);
 
   function absorber(res: Response) {
     const noms: string[] = [];
@@ -59,7 +76,7 @@ export function nouvelleSession(trace: Logger = silencieux) {
     };
     if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
     const res = await fetch(url, {
-      signal: AbortSignal.timeout(DELAI_MAX_MS),
+      signal: AbortSignal.any([echeanceSession, AbortSignal.timeout(DELAI_MAX_MS)]),
       ...opts,
       headers,
       redirect: "manual",

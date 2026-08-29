@@ -147,6 +147,15 @@ export type Apercu = {
   joursRestants: number;
   reserves: number;
   manquants: { date: string; enfant: string }[];
+  /**
+   * Ni repas reserve, ni repas a reserver : le portail ne propose rien sur
+   * cette fenetre (vacances, hors annee scolaire). Meme distinction que
+   * `decider` — sans elle, l'ecran ou le parent verifie que le service marche
+   * lui annoncerait une semaine couverte pour zero repas.
+   */
+  rienAVerifier: boolean;
+  /** Codes d'etat hors liste blanche, traites comme non reserves. Cf. ETATS_RESERVES. */
+  inconnus: string[];
 };
 
 /**
@@ -187,6 +196,8 @@ export async function verifierMaintenant(
         joursRestants: r.joursRestants,
         reserves: r.analyse.reserves.length,
         manquants: r.analyse.manquants.map((m) => ({ date: iso(m.date), enfant: m.enfant })),
+        rienAVerifier: r.analyse.reserves.length === 0 && r.analyse.manquants.length === 0,
+        inconnus: r.analyse.inconnus,
       },
     };
   } catch (e) {

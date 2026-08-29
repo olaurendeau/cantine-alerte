@@ -10,23 +10,28 @@ export type Decision = "rappel" | "confirmation" | "silence";
  */
 export function decider({
   manquants,
-  retenus,
+  reserves,
   joursRestants,
   joursSilencieux,
 }: {
   manquants: number;
   /**
-   * Pointages de la prestation surveillee sur la fenetre. Zero signifie que le
-   * portail ne propose rien du tout : vacances, ou hors annee scolaire.
+   * Repas effectivement reserves sur la fenetre. C'est le chiffre qu'annonce la
+   * confirmation, donc celui qui decide s'il y a quelque chose a confirmer.
+   *
+   * Ne PAS se fier ici au nombre de pointages : pendant les vacances le portail
+   * en renvoie tout de meme, en ETAT_PRESTATION_FERMEE et `disabled`. Les
+   * compter ferait croire a une semaine pleine et renverrait le message
+   * exactement quand il est faux.
    */
-  retenus: number;
+  reserves: number;
   joursRestants: number;
   joursSilencieux: readonly number[];
 }): Decision {
-  // Aucun pointage n'est pas la meme chose que "tout est reserve" : il n'y a
-  // rien a confirmer. Sans ce garde, chaque semaine de vacances envoie a tous
-  // les parents un "Rien a faire, tout est reserve" annoncant zero repas.
-  if (retenus === 0) return "silence";
   if (manquants > 0) return "rappel";
+  // Ni repas reserve, ni repas a reserver : il n'y a rien a confirmer. Le cas
+  // couvre les vacances et les semaines hors annee scolaire, ou confirmer
+  // annoncerait au parent une semaine couverte pour zero repas.
+  if (reserves === 0) return "silence";
   return joursSilencieux.includes(joursRestants) ? "silence" : "confirmation";
 }

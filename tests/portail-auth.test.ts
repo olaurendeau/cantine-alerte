@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { messagesErreur } from "../lib/portail/auth.ts";
+import { ErreurTemporaire, messagesErreur, refuserSiIndisponible } from "../lib/portail/auth.ts";
+import { nePasRejouer } from "../lib/reessayer.ts";
 
 test("le bloc d'erreur est identifie par role=alert, pas par sa classe", () => {
   // Le portail est en Tailwind : ses classes ne sont pas parlantes. C'est la
@@ -39,4 +40,36 @@ test("les doublons sont fusionnes et le nombre de messages est borne", () => {
     (_, i) => `<div role="alert">Erreur ${i}</div>`,
   ).join("");
   assert.equal(messagesErreur(beaucoup).length, 5);
+});
+
+test("une panne du portail est classee avant toute lecture de la reponse", () => {
+  // Les sauts 1, 2 et 4 de la connexion ne regardaient pas le statut : une page
+  // d'erreur 502 ne contient aucun JWT, ce qui se lisait comme un changement de
+  // HTML — donc une ErreurStructure, que l'on ne rejoue jamais. Un hoquet
+  // passager du portail coutait alors definitivement son rappel a la famille.
+  assert.throws(
+    () => refuserSiIndisponible(502, "le token d'amorcage"),
+    (e: unknown) => {
+      assert.ok(e instanceof ErreurTemporaire);
+      assert.ok(!nePasRejouer(e), "un 5xx merite un nouvel essai");
+      return true;
+    },
+  );
+  assert.throws(
+    () => refuserSiIndisponible(429, "la page de connexion"),
+    (e: unknown) => {
+      assert.ok(e instanceof ErreurTemporaire);
+      assert.equal(e.statut, 429);
+      assert.ok(nePasRejouer(e), "insister sur un 429 prolonge le blocage par IP");
+      return true;
+    },
+  );
+});
+
+test("les statuts qui ne disent rien d'une panne laissent passer", () => {
+  // C'est la lecture qui tranchera : un 302 est le cas nominal d'un echec de
+  // connexion, un 401 se classe la ou il est rencontre.
+  for (const statut of [200, 302, 401, 404, 419]) {
+    assert.doesNotThrow(() => refuserSiIndisponible(statut, "un saut"));
+  }
 });

@@ -136,18 +136,24 @@ async function main() {
     const analyse = analyser(payload, cfg, s.debut, s.fin);
     if (opts.verbose) console.error(rapportStructure(analyse));
 
-    if (analyse.retenus.length === 0) {
-      console.log(
-        `Aucun pointage pour la prestation surveillee entre ${iso(s.debut)} et ${iso(s.fin)} : ` +
-          "periode fermee cote portail (vacances), ou hors annee scolaire.",
-      );
-      continue;
-    }
+    // Avant tout raccourci : un etat non repertorie doit se voir meme sur une
+    // fenetre par ailleurs vide, c'est le seul signal qui annonce un code a
+    // classer.
     if (analyse.inconnus.length) {
       console.error(
         `Attention : etat(s) non repertorie(s) ${analyse.inconnus.join(", ")}, traite(s) comme ` +
           "non reserve(s). A classer dans ETATS_RESERVES ou ETATS_NON_RESERVES.",
       );
+    }
+    // Ni repas reserve, ni repas a reserver. Compter les pointages serait faux :
+    // pendant les vacances le portail en renvoie tout de meme, en
+    // ETAT_PRESTATION_FERMEE et `disabled`.
+    if (analyse.reserves.length === 0 && analyse.manquants.length === 0) {
+      console.log(
+        `Rien a reserver entre ${iso(s.debut)} et ${iso(s.fin)}, et aucune reservation posee : ` +
+          "periode fermee cote portail (vacances), ou hors annee scolaire.",
+      );
+      continue;
     }
 
     console.log(

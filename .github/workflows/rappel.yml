@@ -40,11 +40,19 @@ jobs:
           fi
           # --max-time borne l'attente : l'endpoint peut tenir 300 s, au-dela
           # c'est qu'il ne repondra plus.
+          #
+          # Le `|| echec=$?` n'est pas decoratif : les blocs `run` s'executent
+          # sous `bash -e`, et une affectation par substitution de commande
+          # herite du statut de curl. Sans lui, le depassement du delai — le seul
+          # cas que --max-time sert a rendre visible — arretait l'etape avant
+          # l'affichage du code et du corps, et ne laissait qu'une etape rouge
+          # sans aucun diagnostic.
+          echec=0
           code=$(curl -sS --max-time 320 -o reponse.json -w '%{http_code}' \
             -H "Authorization: Bearer $CRON_SECRET" \
-            "$APP_URL/api/cron")
-          echo "HTTP $code"
+            "$APP_URL/api/cron") || echec=$?
+          echo "HTTP ${code:-aucun} (curl exit $echec)"
           # La reponse est un resume agrege, sans adresse email : les logs de ce
           # workflow sont publics puisque le depot l'est.
-          cat reponse.json
-          [ "$code" = "200" ]
+          cat reponse.json 2>/dev/null || echo "(aucune reponse recue)"
+          [ "$echec" = "0" ] && [ "$code" = "200" ]

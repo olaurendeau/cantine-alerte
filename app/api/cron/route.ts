@@ -93,12 +93,15 @@ async function executer(requete: Request) {
     });
   } catch (e) {
     // Le cycle isole deja chaque famille ; arriver ici veut dire que c'est le
-    // cadre lui-meme qui a lache (base injoignable, secret manquant). Repondre
-    // en JSON plutot qu'en 500 nu, pour que le filet GitHub Actions et les logs
-    // Vercel disent quoi regarder.
-    const detail = (e as Error).message;
-    console.error("[cron] cycle interrompu :", detail);
-    return NextResponse.json({ erreur: "cycle interrompu", detail }, { status: 500 });
+    // cadre lui-meme qui a lache (base injoignable, secret manquant).
+    //
+    // Le motif reste dans les logs Vercel, qui sont prives : ces pannes-la sont
+    // precisement celles dont le message expose la cible de connexion — hote,
+    // port, base, parfois l'utilisateur — ou des valeurs de ligne recopiees par
+    // le pilote. Le filet GitHub Actions imprime la reponse telle quelle dans
+    // des journaux publics, au meme titre que le resume ci-dessous.
+    console.error("[cron] cycle interrompu :", (e as Error).message);
+    return NextResponse.json({ erreur: "cycle interrompu" }, { status: 500 });
   }
 
   // Le detail nominatif reste dans les logs Vercel, qui sont prives.

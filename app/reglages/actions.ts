@@ -72,12 +72,28 @@ export async function actionVerifier() {
   if (!r.ok) retour({ erreur: r.message });
 
   const { apercu } = r;
+  // Un etat non repertorie est compte comme non reserve, donc sans risque de
+  // rappel manquant, mais il faut qu'il se voie ici aussi : c'est l'ecran ou le
+  // parent regarde quand quelque chose lui semble anormal.
+  const inconnus = apercu.inconnus.length
+    ? ` (état${apercu.inconnus.length > 1 ? "s" : ""} non répertorié${
+        apercu.inconnus.length > 1 ? "s" : ""
+      } : ${apercu.inconnus.join(", ")})`
+    : "";
+
+  if (apercu.rienAVerifier) {
+    retour({
+      succes:
+        `Semaine du ${apercu.semaine} : le portail ne propose aucun repas — vacances ` +
+        `ou hors année scolaire. Rien à réserver.${inconnus}`,
+    });
+  }
   retour({
     succes:
-      apercu.manquants.length === 0
-        ? `Semaine du ${apercu.semaine} : ${apercu.reserves} reservation(s), rien a signaler.`
-        : `Semaine du ${apercu.semaine} : ${apercu.manquants.length} repas non reserve(s) — ` +
-          apercu.manquants.map((m) => `${m.date} ${m.enfant}`).join(", "),
+      (apercu.manquants.length === 0
+        ? `Semaine du ${apercu.semaine} : ${apercu.reserves} réservation(s), rien à signaler.`
+        : `Semaine du ${apercu.semaine} : ${apercu.manquants.length} repas non réservé(s) — ` +
+          apercu.manquants.map((m) => `${m.date} ${m.enfant}`).join(", ")) + inconnus,
   });
 }
 
