@@ -36,7 +36,7 @@ const SEUIL_DESACTIVATION = 3;
  * doivent aussi etre calculables quand le dechiffrement des identifiants vient
  * d'echouer, cas ou l'on n'a justement pas de config.
  */
-const liensPour = (parentId: string): Liens => ({
+export const liensPour = (parentId: string): Liens => ({
   reservation: urlPortail({ portail: process.env.CANTINE_PORTAIL ?? PORTAIL_DEFAUT }),
   reglages: `${urlPublique()}/reglages`,
   desabonnement: urlDesabonnement(parentId),

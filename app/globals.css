@@ -79,7 +79,9 @@ label {
 
 input[type="email"],
 input[type="password"],
-input[type="text"] {
+input[type="text"],
+input[type="date"],
+select {
   width: 100%;
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--bord);

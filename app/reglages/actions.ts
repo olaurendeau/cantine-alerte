@@ -3,10 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { fermerSession, sessionCourante } from "../../lib/auth/session.ts";
+import { jourDepuisIso } from "../../lib/portail/dates.ts";
 import {
   enregistrerDestinataires,
   enregistrerIdentifiants,
   enregistrerRappels,
+  envoyerMailTest,
   verifierMaintenant,
 } from "../../lib/service/reglages.ts";
 
@@ -94,6 +96,33 @@ export async function actionVerifier() {
         ? `Semaine du ${apercu.semaine} : ${apercu.reserves} réservation(s), rien à signaler.`
         : `Semaine du ${apercu.semaine} : ${apercu.manquants.length} repas non réservé(s) — ` +
           apercu.manquants.map((m) => `${m.date} ${m.enfant}`).join(", ")) + inconnus,
+  });
+}
+
+export async function actionTesterMail(formData: FormData) {
+  const session = await exigerSession();
+  const date = String(formData.get("date") ?? "").trim();
+  const destinataire = String(formData.get("destinataire") ?? "").trim().toLowerCase();
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    retour({ erreur: "Choisissez une date valide." });
+  }
+  if (!destinataire) {
+    retour({ erreur: "Choisissez l'adresse qui doit recevoir le message de test." });
+  }
+
+  // jourDepuisIso epingle la date a midi UTC, comme partout ailleurs : lire les
+  // composantes locales ferait basculer d'un jour selon le fuseau du serveur,
+  // qui tourne en UTC sur Vercel.
+  const r = await envoyerMailTest(session.parentId, {
+    date: jourDepuisIso(date),
+    destinataire,
+  });
+  if (!r.ok) retour({ erreur: r.message });
+  retour({
+    succes: r.envoye
+      ? `Message de test envoyé à ${r.destinataire}, objet « ${r.objet} ».`
+      : r.raison,
   });
 }
 

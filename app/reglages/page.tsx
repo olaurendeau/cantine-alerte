@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { sessionCourante } from "../../lib/auth/session.ts";
-import { JOURS_AVANT_POSSIBLES, libelleJourAvant } from "../../lib/portail/dates.ts";
+import { JOURS_AVANT_POSSIBLES, aujourdhuiParis, iso } from "../../lib/portail/dates.ts";
 import { chargerReglages } from "../../lib/service/reglages.ts";
 import { estAdmin } from "../../lib/service/verification.ts";
 import {
@@ -8,8 +8,10 @@ import {
   actionDestinataires,
   actionIdentifiants,
   actionRappels,
+  actionTesterMail,
   actionVerifier,
 } from "./actions.ts";
+import { LignesRappel } from "./lignes-rappel.tsx";
 
 export default async function Reglages({
   searchParams,
@@ -24,11 +26,17 @@ export default async function Reglages({
 
   const { succes, erreur } = await searchParams;
 
+  // Les memes adresses que celles d'un vrai rappel, a defaut celle du compte :
+  // un test n'a d'interet que s'il emprunte le chemin reel.
+  const adressesTest = reglages.destinataires.length
+    ? reglages.destinataires
+    : [reglages.email];
+
   return (
     <>
-      <h1>Reglages</h1>
+      <h1>Réglages</h1>
       <p className="doux">
-        Connecte en tant que {reglages.email}.{" "}
+        Connecté en tant que {reglages.email}.{" "}
         {estAdmin(reglages.email) && <a href="/admin">Administration</a>}
       </p>
 
@@ -37,16 +45,16 @@ export default async function Reglages({
 
       {!reglages.actif && (
         <div className="message erreur">
-          Les rappels sont suspendus : le portail a refuse les identifiants enregistres a plusieurs
-          reprises. Enregistrez-en de nouveaux pour reactiver la surveillance.
+          Les rappels sont suspendus : le portail a refusé les identifiants enregistrés à
+          plusieurs reprises. Enregistrez-en de nouveaux pour réactiver la surveillance.
         </div>
       )}
 
       <section className="carte">
         <h2>Identifiants du portail</h2>
         <p className="doux">
-          Necessaires pour consulter vos reservations a votre place. Le mot de passe est chiffre et
-          n&apos;est jamais reaffiche : pour le changer, saisissez-en un nouveau.{" "}
+          Nécessaires pour consulter vos réservations à votre place. Le mot de passe est chiffré
+          et n&apos;est jamais réaffiché : pour le changer, saisissez-en un nouveau.{" "}
           <a href="/confidentialite">En savoir plus</a>
         </p>
         <form action={actionIdentifiants}>
@@ -64,25 +72,25 @@ export default async function Reglages({
             name="motDePasse"
             type="password"
             autoComplete="off"
-            placeholder={reglages.motDePasseEnregistre ? "•••••••• (enregistre)" : ""}
+            placeholder={reglages.motDePasseEnregistre ? "•••••••• (enregistré)" : ""}
             required
           />
-          <button type="submit">Verifier et enregistrer</button>
+          <button type="submit">Vérifier et enregistrer</button>
         </form>
 
         <p className="doux" style={{ marginTop: "1rem", marginBottom: 0 }}>
           {reglages.verifieLe
-            ? `Derniere verification reussie le ${reglages.verifieLe.toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}.`
-            : "Aucune verification reussie pour l'instant."}
-          {reglages.derniereErreur && ` Derniere erreur : ${reglages.derniereErreur}`}
+            ? `Dernière vérification réussie le ${reglages.verifieLe.toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}.`
+            : "Aucune vérification réussie pour l'instant."}
+          {reglages.derniereErreur && ` Dernière erreur : ${reglages.derniereErreur}`}
         </p>
       </section>
 
       <section className="carte">
         <h2>Destinataires des rappels</h2>
         <p className="doux">
-          Une adresse par ligne. Souvent les deux parents du foyer. Ces adresses sont independantes
-          de celle utilisee pour vous connecter.
+          Une adresse par ligne. Souvent les deux parents du foyer. Ces adresses sont
+          indépendantes de celle utilisée pour vous connecter.
         </p>
         <form action={actionDestinataires}>
           <label htmlFor="destinataires">Adresses</label>
@@ -106,13 +114,13 @@ export default async function Reglages({
       <section className="carte">
         <h2>Quand vous rappeler</h2>
         <p className="doux">
-          Les reservations ferment le lundi a minuit pour la semaine suivante. Choisissez les jours
-          ou vous voulez etre prevenu s&apos;il manque des repas.
+          Les réservations ferment le lundi à minuit pour la semaine suivante. Choisissez les
+          jours où vous voulez être prévenu s&apos;il manque des repas.
         </p>
         <p className="doux">
-          Par defaut vous recevez aussi un mot les jours ou <strong>tout est deja reserve</strong> :
-          sans cela, une boite vide ne vous dit pas si tout va bien ou si le service est en panne.
-          Decochez la seconde case pour n&apos;etre prevenu qu&apos;en cas de probleme.
+          Par défaut vous recevez aussi un mot les jours où <strong>tout est déjà réservé</strong> :
+          sans cela, une boîte vide ne vous dit pas si tout va bien ou si le service est en panne.
+          Décochez la seconde case pour n&apos;être prévenu qu&apos;en cas de problème.
         </p>
         <form action={actionRappels}>
           <div className="tableau">
@@ -120,62 +128,75 @@ export default async function Reglages({
               <thead>
                 <tr>
                   <th>Jour</th>
-                  <th>Me prevenir</th>
-                  <th>Meme si tout est reserve</th>
+                  <th>Me prévenir</th>
+                  <th>Même si tout est réservé</th>
                 </tr>
               </thead>
               <tbody>
-                {JOURS_AVANT_POSSIBLES.map((n) => (
-                  <tr key={n}>
-                    <td>{libelleJourAvant(n)}</td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        name="jours"
-                        value={n}
-                        aria-label={`Me prevenir ${libelleJourAvant(n)}`}
-                        defaultChecked={reglages.joursAvant.includes(n)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        name="confirmation"
-                        value={n}
-                        aria-label={`Confirmer ${libelleJourAvant(n)} meme si tout est reserve`}
-                        // Coche par defaut, y compris pour un jour pas encore
-                        // choisi : activer le rappel active la confirmation.
-                        defaultChecked={!reglages.joursSilencieux.includes(n)}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                <LignesRappel
+                  joursPossibles={JOURS_AVANT_POSSIBLES}
+                  joursAvant={reglages.joursAvant}
+                  joursSilencieux={reglages.joursSilencieux}
+                />
               </tbody>
             </table>
           </div>
-          <p className="doux">
-            La seconde colonne n&apos;a d&apos;effet que si la premiere est cochee.
-          </p>
           <button type="submit">Enregistrer les rappels</button>
         </form>
       </section>
 
       <section className="carte">
-        <h2>Verifier maintenant</h2>
+        <h2>Vérifier maintenant</h2>
         <p className="doux">
-          Interroge le portail immediatement et affiche l&apos;etat de la semaine visee, sans
+          Interroge le portail immédiatement et affiche l&apos;état de la semaine visée, sans
           envoyer de mail.
         </p>
         <form action={actionVerifier}>
           <button type="submit" className="secondaire">
-            Verifier maintenant
+            Vérifier maintenant
+          </button>
+        </form>
+      </section>
+
+      <section className="carte">
+        <h2>Tester l&apos;envoi</h2>
+        <p className="doux">
+          Envoie à une seule adresse le message qui partirait à la date choisie, avec{" "}
+          <strong>[Test]</strong> dans l&apos;objet. La date sert d&apos;« aujourd&apos;hui » : elle
+          détermine l&apos;échéance, la semaine examinée et le passage en message urgent, ce qui
+          permet de voir le rappel de la veille sans attendre dimanche soir.
+        </p>
+        <p className="doux">
+          Rien n&apos;est enregistré : le vrai rappel du jour reste dû. Attention, choisir une date
+          change la semaine <em>examinée</em>, pas l&apos;état du portail, qui reste celui
+          d&apos;aujourd&apos;hui — une date passée ne rejoue pas l&apos;historique.
+        </p>
+        <form action={actionTesterMail}>
+          <label htmlFor="dateTest">Se positionner au</label>
+          <input
+            id="dateTest"
+            name="date"
+            type="date"
+            defaultValue={iso(aujourdhuiParis())}
+            required
+          />
+          <label htmlFor="destinataireTest">Envoyer à</label>
+          <select id="destinataireTest" name="destinataire" required>
+            {adressesTest.map((adresse) => (
+              <option key={adresse} value={adresse}>
+                {adresse}
+              </option>
+            ))}
+          </select>
+          <button type="submit" className="secondaire">
+            Envoyer un mail de test
           </button>
         </form>
       </section>
 
       <form action={actionDeconnexion}>
         <button type="submit" className="secondaire">
-          Se deconnecter
+          Se déconnecter
         </button>
       </form>
     </>
