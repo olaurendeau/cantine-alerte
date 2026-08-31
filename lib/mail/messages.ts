@@ -112,8 +112,13 @@ export function mailConfirmation({
     blocs: [
       encart({ texte: "Rien à faire, tout est réservé", ton: "succes" }),
       titre(`Semaine du ${formaterJour(semaine)}`),
+      // Present, et non passe : `prochaineEcheance()` rend le prochain lundi,
+      // aujourd'hui inclus. L'echeance est donc toujours a venir quand ce
+      // message part — a J-0 elle tombe le soir meme. L'annoncer au passe
+      // laisse croire que la semaine est close et qu'il n'y a plus rien a
+      // corriger, alors qu'une annulation reste possible jusqu'a minuit.
       paragraphe(
-        `Les ${reserves} repas de la semaine sont réservés. La date limite était ` +
+        `Les ${reserves} repas de la semaine sont réservés. La date limite est ` +
           `${formaterJour(echeance)} à minuit.`,
       ),
       paragraphe(
