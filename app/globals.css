@@ -92,6 +92,23 @@ select {
   margin-bottom: 1rem;
 }
 
+/*
+ * iOS applique son propre habillage aux champs de date : la valeur s'y retrouve
+ * centree, seule de la page a ne pas etre alignee a gauche comme les autres
+ * champs. Neutraliser l'apparence native rend la main sur l'alignement.
+ *
+ * La hauteur minimale va avec : une fois cet habillage retire, iOS ne reserve
+ * plus de place au champ, qui se tasse sur une ligne plus courte que ses
+ * voisins. La valeur reprend celle qu'imposent la police et les marges
+ * ci-dessus.
+ */
+input[type="date"] {
+  -webkit-appearance: none;
+  appearance: none;
+  text-align: left;
+  min-height: calc(1.5em + 1.1rem + 2px);
+}
+
 button {
   padding: 0.55rem 1.1rem;
   border: 1px solid transparent;
