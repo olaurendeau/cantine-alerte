@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { echapper, joursParEnfant } from "../lib/mail/gabarit.ts";
-import { mailEchecParent, mailRappel, type Liens } from "../lib/mail/messages.ts";
+import {
+  mailConfirmation,
+  mailEchecParent,
+  mailRappel,
+  type Liens,
+} from "../lib/mail/messages.ts";
 import { jourDepuisIso } from "../lib/portail/dates.ts";
 import type { Cible } from "../lib/portail/types.ts";
 
@@ -19,15 +24,14 @@ const cible = (date: string, enfant: string): Cible => ({
 });
 
 const JOURS = ["2026-09-21", "2026-09-22", "2026-09-24"];
-const rappel = (manquants: Cible[], urgent = false) =>
-  mailRappel({
-    manquants,
-    semaine: jourDepuisIso("2026-09-21"),
-    echeance: jourDepuisIso("2026-09-14"),
-    joursRestants: urgent ? 0 : 6,
-    urgent,
-    liens,
-  });
+const SEMAINE = jourDepuisIso("2026-09-21");
+const ECHEANCE = jourDepuisIso("2026-09-14");
+
+const rappel = (manquants: Cible[], urgent = false, joursRestants = urgent ? 0 : 6) =>
+  mailRappel({ manquants, semaine: SEMAINE, echeance: ECHEANCE, joursRestants, urgent, liens });
+
+const confirmation = () =>
+  mailConfirmation({ semaine: SEMAINE, echeance: ECHEANCE, reserves: 8, liens });
 
 test("la version texte porte les memes faits que le HTML", () => {
   const m = rappel(["Martin", "Soline"].flatMap((e) => JOURS.map((d) => cible(d, e))));
@@ -42,9 +46,29 @@ test("la version texte porte les memes faits que le HTML", () => {
 test("l'urgence change l'objet et le ton du message", () => {
   const normal = rappel([cible(JOURS[0], "Martin")]);
   const urgent = rappel([cible(JOURS[0], "Martin")], true);
-  assert.ok(!normal.objet.startsWith("Dernier jour"));
-  assert.ok(urgent.objet.startsWith("Dernier jour"));
+  assert.ok(!normal.objet.includes("Dernier jour"));
+  assert.ok(urgent.objet.includes("Dernier jour"));
   assert.ok(urgent.texte.includes("ce soir avant minuit"));
+});
+
+test("un emoji ouvre l'objet et resume l'etat en un coup d'oeil", () => {
+  const manquant = [cible(JOURS[0], "Martin")];
+  // L'emoji est le premier caractere de l'objet : dans une liste de messages,
+  // c'est la seule position que l'apercu ne tronque jamais. Le seuil du
+  // gyrophare (2 jours) est volontairement plus large que `urgent` (J-0), qui
+  // commande lui des formulations vraies ce jour-la seulement.
+  const cas: [string, string][] = [
+    ["✅", confirmation().objet],
+    ["⚠️", rappel(manquant, false, 6).objet],
+    ["⚠️", rappel(manquant, false, 3).objet],
+    ["🚨", rappel(manquant, false, 2).objet],
+    ["🚨", rappel(manquant, true).objet],
+  ];
+  for (const [emoji, objet] of cas) {
+    assert.ok(objet.startsWith(`${emoji} `), `objet sans emoji en tete : ${objet}`);
+  }
+  // A J-2 l'emoji presse, mais le texte ne promet pas encore le dernier soir.
+  assert.ok(!rappel(manquant, false, 2).texte.includes("ce soir avant minuit"));
 });
 
 test("le pied de page porte le lien de desabonnement", () => {

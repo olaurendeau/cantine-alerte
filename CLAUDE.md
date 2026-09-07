@@ -359,6 +359,15 @@ Contraintes de rendu à ne pas « simplifier » :
   seul, le bouton y deviendrait un texte nu.
 - **`echapper()` sur toute donnée non littérale.** Les prénoms viennent du portail, les motifs
   d'erreur de messages tiers. En texte brut le risque n'existait pas ; en HTML c'est une injection.
+- **Un emoji ouvre l'objet** des rappels et des confirmations : ✅ tout est réservé, ⚠️ il manque
+  des repas, 🚨 il manque des repas et l'échéance est à deux jours ou moins. C'est le premier
+  caractère, donc la seule position que l'aperçu mobile ne tronque jamais. Des glyphes parlants et
+  non des ronds de couleur : un rond ne dit plus rien là où le client rend les emojis en monochrome
+  (Outlook pour Windows) ni à un lecteur d'écran. ⚠️ Le seuil du gyrophare (`SEUIL_PRESSE`, deux
+  jours) est **volontairement plus large que `urgent`**, qui vaut J-0 seul : `urgent` commande des
+  formulations vraies ce jour-là uniquement (« ce soir avant minuit », encart rouge), l'emoji
+  n'affirme rien de tel et peut donc prévenir plus tôt. Ne pas les fusionner — avancer « Dernier
+  jour » à J-2 rendrait le message faux et userait l'alerte avant le vrai dernier jour.
 - **Preheader** masqué portant l'échéance : c'est lui qui rend le mail utile depuis la liste des
   messages, sans l'ouvrir.
 - **Ni blanc ni noir purs**, pour rester lisible quand un client inverse les couleurs.

@@ -41,6 +41,29 @@ const pied = (liens: Liens) =>
     { libelle: "Code source", url: urlDepot() },
   ]);
 
+/**
+ * Un emoji ouvre l'objet de chaque message pour que l'etat se lise sans meme
+ * ouvrir le mail — dans une liste de messages, c'est la seule chose qui n'est
+ * jamais tronquee.
+ *
+ * Trois etats seulement, et des glyphes qui portent leur sens : un rond de
+ * couleur ne dirait plus rien la ou le client rend les emojis en monochrome
+ * (Outlook pour Windows) ni a un lecteur d'ecran, qui annonce « coche »,
+ * « attention » et « gyrophare ».
+ */
+const EMOJI_OK = "✅";
+const EMOJI_MANQUE = "⚠️";
+const EMOJI_PRESSE = "🚨";
+
+/**
+ * Seuil du gyrophare : deux jours ou moins avant l'echeance.
+ *
+ * Volontairement plus large que `urgent`, qui vaut J-0 seul parce qu'il
+ * commande des formulations vraies ce jour-la uniquement (« ce soir avant
+ * minuit »). L'emoji, lui, n'affirme rien de tel : il peut prevenir plus tot.
+ */
+const SEUIL_PRESSE = 2;
+
 /** Un groupe par enfant, les jours dans l'ordre chronologique. */
 function grouperParEnfant(manquants: Cible[]): GroupeJours[] {
   const parEnfant = new Map<string, Date[]>();
@@ -71,6 +94,7 @@ export function mailRappel({
 }): Mail {
   const nb = manquants.length;
   const repas = `${nb} repas non réservé${nb > 1 ? "s" : ""}`;
+  const emoji = joursRestants <= SEUIL_PRESSE ? EMOJI_PRESSE : EMOJI_MANQUE;
   const delai = urgent
     ? "À réserver ce soir avant minuit"
     : `À réserver avant ${formaterJour(echeance)}, minuit` +
@@ -80,8 +104,8 @@ export function mailRappel({
     // L'aperçu mobile tronque : l'information utile passe devant le nom du
     // service, qui est de toute façon visible sur la ligne de l'expéditeur.
     objet: urgent
-      ? `Dernier jour — ${repas} pour la semaine du ${formaterJour(semaine)}`
-      : `${repas} · semaine du ${formaterJour(semaine)}`,
+      ? `${emoji} Dernier jour — ${repas} pour la semaine du ${formaterJour(semaine)}`
+      : `${emoji} ${repas} · semaine du ${formaterJour(semaine)}`,
     preheader: `${delai}.`,
     blocs: [
       encart({ texte: delai, ton: urgent ? "urgent" : "info" }),
@@ -107,7 +131,7 @@ export function mailConfirmation({
   liens: Liens;
 }): Mail {
   return rendreMail({
-    objet: `Tout est réservé · semaine du ${formaterJour(semaine)}`,
+    objet: `${EMOJI_OK} Tout est réservé · semaine du ${formaterJour(semaine)}`,
     preheader: "Rien à faire, la semaine est couverte.",
     blocs: [
       encart({ texte: "Rien à faire, tout est réservé", ton: "succes" }),
