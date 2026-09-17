@@ -24,10 +24,17 @@ export function LignesRappel({
   joursPossibles,
   joursAvant,
   joursSilencieux,
+  avecCantine,
 }: {
   joursPossibles: number[];
   joursAvant: number[];
   joursSilencieux: number[];
+  /**
+   * L'echeance du lundi n'existe que pour la cantine : une famille qui ne suit
+   * que la garderie lirait sinon « lundi (dernier jour) » alors qu'aucune
+   * echeance ne tombe ce lundi-la pour elle.
+   */
+  avecCantine: boolean;
 }) {
   const [jours, setJours] = useState(() => new Set(joursAvant));
   // Confirmations restreintes aux jours retenus : c'est ce qui evite de partir
@@ -40,7 +47,7 @@ export function LignesRappel({
     <>
       {joursPossibles.map((n) => {
         const prevenu = jours.has(n);
-        const jour = libelleJourAvant(n);
+        const jour = libelleJourAvant(n, { avecCantine });
         return (
           <tr key={n}>
             <td>{jour}</td>

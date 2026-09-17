@@ -26,6 +26,9 @@ export default async function Admin() {
       echecs: identifiantsPortail.echecsConsecutifs,
       derniereErreur: identifiantsPortail.derniereErreur,
       joursAvant: rappels.joursAvant,
+      joursMatin: rappels.joursMatin,
+      joursSoir: rappels.joursSoir,
+      pauseSemaine: rappels.pauseSemaine,
       nbDestinataires: sql<number>`(
         select count(*) from ${destinataires} where ${destinataires.parentId} = ${parents.id}
       )`,
@@ -61,6 +64,8 @@ export default async function Admin() {
                 <th>Etat</th>
                 <th>Derniere verif.</th>
                 <th>Rappels</th>
+                <th>Périsco.</th>
+                <th>Pause</th>
                 <th>Dest.</th>
                 <th>Erreur</th>
               </tr>
@@ -71,7 +76,16 @@ export default async function Admin() {
                   <td>{c.email}</td>
                   <td>{c.actif ? "actif" : "suspendu"}</td>
                   <td>{dateFr(c.verifieLe)}</td>
-                  <td>{(c.joursAvant ?? []).map(libelleJourAvant).join(", ") || "—"}</td>
+                  <td>{(c.joursAvant ?? []).map((n) => libelleJourAvant(n)).join(", ") || "—"}</td>
+                  <td>
+                    {[
+                      (c.joursMatin ?? []).length ? `matin ${(c.joursMatin ?? []).length}j` : null,
+                      (c.joursSoir ?? []).length ? `soir ${(c.joursSoir ?? []).length}j` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(", ") || "—"}
+                  </td>
+                  <td>{c.pauseSemaine ?? "—"}</td>
                   <td>{c.nbDestinataires}</td>
                   <td>
                     {c.echecs ? `${c.echecs}x — ${c.derniereErreur ?? ""}`.slice(0, 90) : "—"}
@@ -80,7 +94,7 @@ export default async function Admin() {
               ))}
               {comptes.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="doux">
+                  <td colSpan={8} className="doux">
                     Aucun compte inscrit.
                   </td>
                 </tr>
