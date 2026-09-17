@@ -6,11 +6,25 @@ test("un repas manquant declenche toujours un rappel", () => {
   // Meme un jour marque silencieux : le silence ne concerne que les
   // confirmations, jamais une alerte.
   assert.equal(
-    decider({ manquants: 8, reserves: 20, joursRestants: 4, joursSilencieux: [4] }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 8,
+      reserves: 20,
+      joursRestants: 4,
+      joursSilencieux: [4],
+    }),
     "rappel",
   );
   assert.equal(
-    decider({ manquants: 1, reserves: 10, joursRestants: 0, joursSilencieux: [0, 1, 2] }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 1,
+      reserves: 10,
+      joursRestants: 0,
+      joursSilencieux: [0,
+      1,
+      2],
+    }),
     "rappel",
   );
 });
@@ -19,7 +33,13 @@ test("par defaut on confirme meme quand tout est reserve", () => {
   // Liste vide = comportement par defaut : une boite vide ne permet pas de
   // distinguer "tout va bien" d'un service en panne.
   assert.equal(
-    decider({ manquants: 0, reserves: 8, joursRestants: 4, joursSilencieux: [] }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 0,
+      reserves: 8,
+      joursRestants: 4,
+      joursSilencieux: [],
+    }),
     "confirmation",
   );
 });
@@ -27,16 +47,34 @@ test("par defaut on confirme meme quand tout est reserve", () => {
 test("la confirmation se coupe jour par jour", () => {
   const silencieux = [4, 5];
   assert.equal(
-    decider({ manquants: 0, reserves: 8, joursRestants: 4, joursSilencieux: silencieux }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 0,
+      reserves: 8,
+      joursRestants: 4,
+      joursSilencieux: silencieux,
+    }),
     "silence",
   );
   assert.equal(
-    decider({ manquants: 0, reserves: 8, joursRestants: 5, joursSilencieux: silencieux }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 0,
+      reserves: 8,
+      joursRestants: 5,
+      joursSilencieux: silencieux,
+    }),
     "silence",
   );
   // Un jour non liste continue de confirmer.
   assert.equal(
-    decider({ manquants: 0, reserves: 8, joursRestants: 0, joursSilencieux: silencieux }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 0,
+      reserves: 8,
+      joursRestants: 0,
+      joursSilencieux: silencieux,
+    }),
     "confirmation",
   );
 });
@@ -50,12 +88,24 @@ test("une fenetre sans repas reserve ni repas a reserver ne confirme rien", () =
   // pendant les vacances le portail en renvoie tout de meme, fermes et
   // verrouilles. Cf. le test de bout en bout dans prestations.test.ts.
   assert.equal(
-    decider({ manquants: 0, reserves: 0, joursRestants: 4, joursSilencieux: [] }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 0,
+      reserves: 0,
+      joursRestants: 4,
+      joursSilencieux: [],
+    }),
     "silence",
   );
   // Y compris a J-0, ou la confirmation serait normalement la plus attendue.
   assert.equal(
-    decider({ manquants: 0, reserves: 0, joursRestants: 0, joursSilencieux: [] }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 0,
+      reserves: 0,
+      joursRestants: 0,
+      joursSilencieux: [],
+    }),
     "silence",
   );
 });
@@ -64,7 +114,41 @@ test("un seul repas reserve suffit a confirmer", () => {
   // La borne du test precedent : des qu'il y a quelque chose a annoncer, on
   // annonce. Le silence est reserve aux fenetres reellement vides.
   assert.equal(
-    decider({ manquants: 0, reserves: 1, joursRestants: 4, joursSilencieux: [] }),
+    decider({
+      jourDeNouvelles: true,
+      manquants: 0,
+      reserves: 1,
+      joursRestants: 4,
+      joursSilencieux: [],
+    }),
     "confirmation",
+  );
+});
+
+test("un passage declenche par le seul periscolaire ne confirme jamais", () => {
+  // Le periscolaire se joue a deux jours : il est regarde tous les jours, y
+  // compris hors des jours choisis par la famille. Mais ces jours-la on n'a pas
+  // regarde la semaine visee — annoncer qu'elle est couverte serait faux.
+  assert.equal(
+    decider({
+      jourDeNouvelles: false,
+      manquants: 0,
+      reserves: 12,
+      joursRestants: 3,
+      joursSilencieux: [],
+    }),
+    "silence",
+  );
+  // Le rappel, lui, passe : c'est le seul moyen de rattraper une garderie
+  // oubliee avant sa fermeture de ce soir.
+  assert.equal(
+    decider({
+      jourDeNouvelles: false,
+      manquants: 1,
+      reserves: 12,
+      joursRestants: 3,
+      joursSilencieux: [],
+    }),
+    "rappel",
   );
 });

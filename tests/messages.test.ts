@@ -14,24 +14,45 @@ const liens: Liens = {
   reservation: "https://portail.exemple.fr/argentiere",
   reglages: "https://cantine.exemple.fr/reglages",
   desabonnement: "https://cantine.exemple.fr/desabonnement?jeton=abc",
+  pause: "https://cantine.exemple.fr/pause?jeton=abc",
 };
 
 const cible = (date: string, enfant: string): Cible => ({
   date: jourDepuisIso(date),
   enfant,
   prestation: "Repas enfant",
+  cle: "cantine",
+  code: "ETAT_NON_RESERVE",
+});
+
+const perisco = (date: string, enfant: string, cle: "matin" | "soir" = "matin"): Cible => ({
+  date: jourDepuisIso(date),
+  enfant,
+  prestation: cle === "matin" ? "Garderie matin" : "Garderie soir",
+  cle,
   code: "ETAT_NON_RESERVE",
 });
 
 const JOURS = ["2026-09-21", "2026-09-22", "2026-09-24"];
 const SEMAINE = jourDepuisIso("2026-09-21");
 const ECHEANCE = jourDepuisIso("2026-09-14");
+// Mardi : J+1 est le mercredi 9, J+2 le jeudi 10.
+const AUJOURDHUI = jourDepuisIso("2026-09-08");
+const DEMAIN = "2026-09-09";
+const APRES_DEMAIN = "2026-09-10";
 
-const rappel = (manquants: Cible[], urgent = false, joursRestants = urgent ? 0 : 6) =>
-  mailRappel({ manquants, semaine: SEMAINE, echeance: ECHEANCE, joursRestants, urgent, liens });
+const rappel = (manquants: Cible[], joursRestants = 6) =>
+  mailRappel({
+    aujourdhui: AUJOURDHUI,
+    cantine: { manquants, semaine: SEMAINE, echeance: ECHEANCE, joursRestants },
+    liens,
+  });
+
+const rappelPerisco = (manquants: Cible[]) =>
+  mailRappel({ aujourdhui: AUJOURDHUI, cantine: null, periscolaire: manquants, liens });
 
 const confirmation = () =>
-  mailConfirmation({ semaine: SEMAINE, echeance: ECHEANCE, reserves: 8, liens });
+  mailConfirmation({ cantine: { semaine: SEMAINE, echeance: ECHEANCE, reserves: 8 }, liens });
 
 test("la version texte porte les memes faits que le HTML", () => {
   const m = rappel(["Martin", "Soline"].flatMap((e) => JOURS.map((d) => cible(d, e))));
@@ -45,7 +66,7 @@ test("la version texte porte les memes faits que le HTML", () => {
 
 test("l'urgence change l'objet et le ton du message", () => {
   const normal = rappel([cible(JOURS[0], "Martin")]);
-  const urgent = rappel([cible(JOURS[0], "Martin")], true);
+  const urgent = rappel([cible(JOURS[0], "Martin")], 0);
   assert.ok(!normal.objet.includes("Dernier jour"));
   assert.ok(urgent.objet.includes("Dernier jour"));
   assert.ok(urgent.texte.includes("ce soir avant minuit"));
@@ -59,16 +80,25 @@ test("un emoji ouvre l'objet et resume l'etat en un coup d'oeil", () => {
   // commande lui des formulations vraies ce jour-la seulement.
   const cas: [string, string][] = [
     ["✅", confirmation().objet],
-    ["⚠️", rappel(manquant, false, 6).objet],
-    ["⚠️", rappel(manquant, false, 3).objet],
-    ["🚨", rappel(manquant, false, 2).objet],
-    ["🚨", rappel(manquant, true).objet],
+    ["⚠️", rappel(manquant, 6).objet],
+    ["⚠️", rappel(manquant, 3).objet],
+    ["🚨", rappel(manquant, 2).objet],
+    ["🚨", rappel(manquant, 0).objet],
   ];
   for (const [emoji, objet] of cas) {
     assert.ok(objet.startsWith(`${emoji} `), `objet sans emoji en tete : ${objet}`);
   }
   // A J-2 l'emoji presse, mais le texte ne promet pas encore le dernier soir.
-  assert.ok(!rappel(manquant, false, 2).texte.includes("ce soir avant minuit"));
+  assert.ok(!rappel(manquant, 2).texte.includes("ce soir avant minuit"));
+});
+
+test("seule, la cantine garde sa formulation d'origine", () => {
+  // L'encart de tete porte deja l'echeance : la repeter dans la section serait
+  // du bruit. Le rappel de l'echeance ne sert que lorsque deux sections
+  // cohabitent et que l'encart ne parle que de l'une d'elles.
+  const m = rappel([cible(JOURS[0], "Martin")]);
+  assert.ok(m.texte.includes("Semaine du lundi 21 septembre."));
+  assert.ok(!m.texte.includes("Cantine — semaine"));
 });
 
 test("le pied de page porte le lien de desabonnement", () => {
@@ -131,4 +161,104 @@ test("un mail est un document HTML complet", () => {
   assert.ok(m.html.includes('role="presentation"'));
   // Le preheader porte l'echeance dans l'apercu de notification.
   assert.ok(m.html.includes("lundi 14 septembre"));
+});
+
+test("une famille sans periscolaire retrouve l'objet d'origine, au caractere pres", () => {
+  // Le test de non-regression du changement : la grande majorite des familles
+  // n'utilisera pas la garderie, et leur message ne doit pas bouger d'un iota.
+  assert.equal(
+    rappel([cible(JOURS[0], "Martin")]).objet,
+    "⚠️ 1 repas non réservé · semaine du lundi 21 septembre",
+  );
+  assert.equal(
+    rappel([cible(JOURS[0], "Martin")], 0).objet,
+    "🚨 Dernier jour — 1 repas non réservé pour la semaine du lundi 21 septembre",
+  );
+  assert.equal(confirmation().objet, "✅ Tout est réservé · semaine du lundi 21 septembre");
+});
+
+test("le gyrophare du periscolaire ne s'allume qu'au dernier jour utile", () => {
+  // SEUIL_PRESSE vaut deux jours, calibre sur le cycle de sept jours de la
+  // cantine. Le transposer tel quel a un cycle de deux jours le ferait sonner
+  // en permanence : l'emoji ne dirait plus rien. On transpose l'intention —
+  // la derniere ligne droite — qui vaut ici J-1.
+  assert.ok(rappelPerisco([perisco(APRES_DEMAIN, "Martin")]).objet.startsWith("⚠️"));
+  assert.ok(rappelPerisco([perisco(DEMAIN, "Martin")]).objet.startsWith("🚨"));
+});
+
+test("l'objet periscolaire nomme les jours concernes", () => {
+  assert.equal(
+    rappelPerisco([perisco(APRES_DEMAIN, "Martin")]).objet,
+    "⚠️ 1 périscolaire non réservé · jeudi 10",
+  );
+  // Dernier jour utile : la formulation d'urgence est vraie ce soir-la.
+  assert.equal(
+    rappelPerisco([perisco(DEMAIN, "Martin")]).objet,
+    "🚨 Dernier jour — 1 périscolaire non réservé",
+  );
+  assert.ok(rappelPerisco([perisco(DEMAIN, "Martin")]).texte.includes("ce soir avant minuit"));
+});
+
+test("en mixte, l'objet epouse le perimetre le plus pressant", () => {
+  // L'apercu mobile tronque : ce qui expire en premier doit tenir dans les
+  // premiers caracteres. Un objet a parts egales rendrait « Dernier jour »
+  // litteralement faux pour l'un des deux perimetres.
+  const m = mailRappel({
+    aujourdhui: AUJOURDHUI,
+    cantine: { manquants: [cible(JOURS[0], "Martin")], semaine: SEMAINE, echeance: ECHEANCE, joursRestants: 6 },
+    periscolaire: [perisco(DEMAIN, "Soline")],
+    liens,
+  });
+  assert.equal(m.objet, "🚨 Dernier jour — 1 périscolaire non réservé · et 1 repas");
+  // Les deux sections sont la, dans l'ordre fixe cantine puis periscolaire.
+  assert.ok(m.texte.indexOf("Cantine") < m.texte.indexOf("Périscolaire"));
+  // Et chacune porte SA propre echeance : l'encart ne parle que de la plus
+  // pressante, sans quoi « ce soir avant minuit » se lirait comme valant aussi
+  // pour la cantine, qui a six jours devant elle.
+  assert.ok(m.texte.includes("Cantine — semaine du lundi 21 septembre. À réserver avant"), m.texte);
+  assert.ok(m.texte.includes("dans 6 jours"));
+  assert.ok(m.texte.includes("Périscolaire — à réserver la veille avant minuit."));
+  assert.ok(m.texte.includes("Martin"));
+  assert.ok(m.texte.includes("Soline"));
+});
+
+test("le periscolaire dit le moment concerne, pas seulement le jour", () => {
+  // Sans le moment, le parent ne sait pas laquelle des deux inscriptions poser.
+  const m = rappelPerisco([
+    perisco(DEMAIN, "Martin", "matin"),
+    perisco(DEMAIN, "Martin", "soir"),
+    perisco(APRES_DEMAIN, "Soline", "soir"),
+  ]);
+  assert.ok(m.texte.includes("mercredi 9 (matin et soir)"), m.texte);
+  assert.ok(m.texte.includes("jeudi 10 (soir)"), m.texte);
+});
+
+test("le bouton de pause n'apparait que sur un rappel de cantine", () => {
+  // Il ne coupe que la cantine : l'afficher sur un message qui ne parle que de
+  // garderie promettrait un silence qu'il ne tient pas.
+  assert.ok(rappel([cible(JOURS[0], "Martin")]).html.includes(liens.pause!));
+  assert.ok(!rappelPerisco([perisco(DEMAIN, "Martin")]).html.includes(liens.pause!));
+  assert.ok(!confirmation().html.includes(liens.pause!));
+});
+
+test("la confirmation garde une ligne par periode, jamais une phrase globale", () => {
+  // La cantine se confirme sur une semaine, le periscolaire sur deux jours. Un
+  // « tout est reserve » unique affirmerait une couverture de la garderie sur
+  // des jours qu'on n'a jamais regardes.
+  const m = mailConfirmation({
+    cantine: { semaine: SEMAINE, echeance: ECHEANCE, reserves: 8 },
+    periscolaire: { jours: [jourDepuisIso(DEMAIN), jourDepuisIso(APRES_DEMAIN)] },
+    liens,
+  });
+  assert.ok(m.texte.includes("Les 8 repas de la semaine sont réservés"));
+  assert.ok(m.texte.includes("Périscolaire : rien à réserver mercredi 9 et jeudi 10."));
+
+  // Periscolaire seul : la semaine visee n'a pas ete regardee, on n'en parle pas.
+  const seul = mailConfirmation({
+    cantine: null,
+    periscolaire: { jours: [jourDepuisIso(DEMAIN)] },
+    liens,
+  });
+  assert.equal(seul.objet, "✅ Rien à réserver · mercredi 9");
+  assert.ok(!seul.texte.includes("repas de la semaine"));
 });
