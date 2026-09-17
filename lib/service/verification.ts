@@ -1,8 +1,9 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { dechiffrer } from "../crypto.ts";
 import { db } from "../db/index.ts";
 import { destinataires, envois, identifiantsPortail, parents, rappels } from "../db/schema.ts";
 import { urlDesabonnement } from "../auth/desabonnement.ts";
+import { urlPause } from "../auth/pause.ts";
 import { expediteur, type Expediteur } from "../mail/index.ts";
 import {
   mailConfirmation,
@@ -14,17 +15,22 @@ import {
 import {
   ErreurIdentifiants,
   PORTAIL_DEFAUT,
+  ajouter,
   aujourdhuiParis,
   configDepuisEnv,
+  exclusionsDepuisEnv,
+  fenetresPour,
   iso,
+  jourSemaine,
   joursRestants as calculerRestants,
   prochaineEcheance,
   semaineVisee,
   urlPortail,
   verifierParent,
+  type Fenetre,
 } from "../portail/index.ts";
 import { decider } from "./decision.ts";
-import type { Logger } from "../portail/types.ts";
+import type { CleSurveillance, Logger } from "../portail/types.ts";
 import { silencieux } from "../portail/types.ts";
 import { reessayer } from "../reessayer.ts";
 import { urlPublique } from "../url-publique.ts";
@@ -36,10 +42,14 @@ const SEUIL_DESACTIVATION = 3;
  * doivent aussi etre calculables quand le dechiffrement des identifiants vient
  * d'echouer, cas ou l'on n'a justement pas de config.
  */
-export const liensPour = (parentId: string): Liens => ({
+export const liensPour = (parentId: string, semaine?: string): Liens => ({
   reservation: urlPortail({ portail: process.env.CANTINE_PORTAIL ?? PORTAIL_DEFAUT }),
   reglages: `${urlPublique()}/reglages`,
   desabonnement: urlDesabonnement(parentId),
+  // Le jeton porte la semaine : un lien de la semaine derniere ne peut pas
+  // faire taire celle en cours. Absent quand on ne sait pas de quelle semaine
+  // on parle — les mails d'echec, par exemple.
+  ...(semaine ? { pause: urlPause(parentId, semaine) } : {}),
 });
 const PAUSE_DEFAUT_MS = 3000;
 
@@ -71,6 +81,8 @@ export type StatutParent =
   /** Le portail ne propose rien sur la fenetre : vacances, hors annee scolaire. */
   | "rien_a_verifier"
   | "deja_notifie"
+  /** Le parent a demande le silence sur la cantine pour cette semaine visee. */
+  | "en_pause"
   /** Verification faite, message compose, mais l'expediteur n'a pas pu envoyer. */
   | "echec_envoi"
   | "identifiants_invalides"
@@ -84,6 +96,10 @@ export type ResultatParent = {
   manquants?: number;
   /** Codes d'etat hors liste blanche, a classer. Cf. ETATS_RESERVES. */
   inconnus?: string[];
+  /** Surveillances demandees qui n'existent pas sur ce portail. */
+  absentes?: CleSurveillance[];
+  /** Surveillances dont la fenetre calculee arrive apres l'echeance reelle. */
+  depassees?: CleSurveillance[];
 };
 
 export type ResultatCron = {
@@ -92,6 +108,16 @@ export type ResultatCron = {
   semaineVisee: string;
   joursRestants: number;
   traites: ResultatParent[];
+  /**
+   * Duree du cycle et nombre de connexions au portail.
+   *
+   * Le periscolaire fait passer une famille qui l'active de deux jours sur sept
+   * a sept jours sur sept : le plafond de 300 s d'une fonction Vercel, a trois
+   * secondes de pause par famille, se rapproche sans rien dire. Ces deux
+   * chiffres remontent dans le resume pour qu'on le voie venir.
+   */
+  dureeMs: number;
+  interroges: number;
 };
 
 /**
@@ -112,25 +138,31 @@ export const estAdmin = (email: string, env: Env = process.env): boolean =>
 /**
  * Un cycle de rappel complet.
  *
- * On ne traite que les parents dont la liste `jours_avant` contient le nombre
- * de jours restants du jour : c'est ce qui fait qu'une execution quotidienne
- * unique suffit a servir toutes les preferences de rappel.
+ * Une seule execution quotidienne sert toutes les preferences : le rappel de
+ * cantine ne part que les jours choisis par la famille, tandis que le
+ * periscolaire — qui se joue a deux jours — est regarde des qu'un jour attendu
+ * tombe a J+1 ou J+2.
  */
 export async function executerCron({
   maintenant = new Date(),
   trace = silencieux,
   expedier = expediteur(),
 }: { maintenant?: Date; trace?: Logger; expedier?: Expediteur } = {}): Promise<ResultatCron> {
+  const commence = Date.now();
   const aujourdhui = aujourdhuiParis(maintenant);
   const echeance = prochaineEcheance(aujourdhui);
   const semaine = semaineVisee(echeance);
   const restants = calculerRestants(aujourdhui, echeance);
+  const exclusions = exclusionsDepuisEnv(process.env);
 
   trace(
     `cron ${iso(aujourdhui)} : echeance ${iso(echeance)} (J-${restants}), ` +
       `semaine visee ${iso(semaine)}`,
   );
 
+  // La pause n'est PAS filtree ici : elle ne couvre que la cantine, et une
+  // famille en pause reste interrogee pour son periscolaire. C'est
+  // `fenetresPour` qui tranche, un cran plus bas.
   const dus = await db
     .select({
       parentId: parents.id,
@@ -139,7 +171,12 @@ export async function executerCron({
       mdpChiffre: identifiantsPortail.mdpChiffre,
       echecs: identifiantsPortail.echecsConsecutifs,
       alerteEchecLe: identifiantsPortail.alerteEchecLe,
+      joursAvant: rappels.joursAvant,
       joursSilencieux: rappels.joursSilencieux,
+      joursSansCantine: rappels.joursSansCantine,
+      joursMatin: rappels.joursMatin,
+      joursSoir: rappels.joursSoir,
+      pauseSemaine: rappels.pauseSemaine,
     })
     .from(parents)
     .innerJoin(identifiantsPortail, eq(identifiantsPortail.parentId, parents.id))
@@ -147,22 +184,65 @@ export async function executerCron({
     .where(
       and(
         eq(parents.actif, true),
-        sql`${rappels.joursAvant} @> ARRAY[${restants}]::integer[]`,
+        // `jours_avant` vide est l'interrupteur general pose par le lien de
+        // desabonnement : plus aucun mail, periscolaire compris.
+        sql`cardinality(${rappels.joursAvant}) > 0`,
+        sql`(${rappels.joursAvant} @> ARRAY[${restants}]::integer[]
+             OR cardinality(${rappels.joursMatin}) > 0
+             OR cardinality(${rappels.joursSoir}) > 0)`,
       ),
     );
 
-  trace(`${dus.length} compte(s) a traiter aujourd'hui`);
+  trace(`${dus.length} compte(s) candidat(s) aujourd'hui`);
 
   const traites: ResultatParent[] = [];
-  for (const [i, parent] of dus.entries()) {
+  let interroges = 0;
+  for (const parent of dus) {
+    const fenetres = fenetresPour({
+      aujourdhui,
+      exclusions,
+      reglages: {
+        joursAvant: parent.joursAvant ?? [],
+        joursSansCantine: parent.joursSansCantine ?? [],
+        joursMatin: parent.joursMatin ?? [],
+        joursSoir: parent.joursSoir ?? [],
+        pauseSemaine: parent.pauseSemaine,
+      },
+    });
+
+    if (fenetres.length === 0) {
+      // On distingue le silence demande du simple "rien a faire ce jour-la" :
+      // le premier merite d'apparaitre au parent comme a l'exploitant, le
+      // second remplirait le decompte de non-evenements.
+      const jourDeNouvelles = (parent.joursAvant ?? []).includes(restants);
+      if (jourDeNouvelles && parent.pauseSemaine === iso(semaine)) {
+        traites.push({ parentId: parent.parentId, email: parent.email, statut: "en_pause" });
+      }
+      continue;
+    }
+
     // Le portail limite le debit par adresse IP : enchainer les connexions sans
     // pause finit en 429, et ce 429 frappe alors des comptes valides. On espace
-    // donc les familles. A 3 s l'intervalle, on tient une cinquantaine de
-    // comptes dans les 300 s d'une fonction Vercel.
-    if (i > 0) await pause(PAUSE_ENTRE_COMPTES_MS);
+    // donc les familles reellement interrogees — pauser pour un compte qu'on
+    // vient d'ecarter gaspillerait le budget de la fonction.
+    if (interroges > 0) await pause(PAUSE_ENTRE_COMPTES_MS);
+    interroges++;
+    trace(
+      `parent ${parent.parentId} : ${interroges}e connexion, ` +
+        `${fenetres.map((f) => f.cle).join("+")}, ${Date.now() - commence} ms ecoulees`,
+    );
+
     try {
       traites.push(
-        await traiterParent(parent, { aujourdhui, semaine, echeance, restants, trace, expedier }),
+        await traiterParent(parent, {
+          aujourdhui,
+          semaine,
+          echeance,
+          restants,
+          fenetres,
+          trace,
+          expedier,
+        }),
       );
     } catch (e) {
       // Filet de derniere instance. traiterParent gere deja ses erreurs, mais
@@ -185,6 +265,8 @@ export async function executerCron({
     semaineVisee: iso(semaine),
     joursRestants: restants,
     traites,
+    dureeMs: Date.now() - commence,
+    interroges,
   };
 }
 
@@ -195,8 +277,32 @@ type Compte = {
   mdpChiffre: string;
   echecs: number;
   alerteEchecLe: Date | null;
+  joursAvant: number[];
   joursSilencieux: number[];
 };
+
+/**
+ * Les valeurs de `envois.type`.
+ *
+ * Le perimetre en fait partie : sans lui, un rappel de garderie pose a 16 h
+ * occuperait la ligne du jour, et le filet de 19 h conclurait « deja notifie »
+ * si une reservation de cantine venait d'etre annulee entre-temps.
+ */
+type TypeEnvoi = "rappel_cantine" | "rappel_periscolaire" | "confirmation";
+
+const RAPPELS: TypeEnvoi[] = ["rappel_cantine", "rappel_periscolaire"];
+
+/** Les jours de periscolaire que les fenetres du jour ont reellement regardes. */
+function joursRegardes(fenetres: Fenetre[]): Date[] {
+  const vus = new Set<number>();
+  for (const f of fenetres) {
+    if (f.cle === "cantine") continue;
+    for (let d = f.debut; d <= f.fin; d = ajouter(d, 1)) {
+      if (f.joursAttendus.has(jourSemaine(d))) vus.add(d.getTime());
+    }
+  }
+  return [...vus].sort((a, b) => a - b).map((t) => new Date(t));
+}
 
 async function traiterParent(
   compte: Compte,
@@ -205,6 +311,7 @@ async function traiterParent(
     semaine: Date;
     echeance: Date;
     restants: number;
+    fenetres: Fenetre[];
     trace: Logger;
     expedier: Expediteur;
   },
@@ -222,18 +329,22 @@ async function traiterParent(
       password: dechiffrer(compte.mdpChiffre, compte.parentId),
     });
 
-    // Reessais sur panne du portail, jamais sur identifiants refuses.
-    // On passe bien la date du jour : verifierParent en deduit lui-meme
-    // l'echeance puis la semaine visee. Lui donner le lundi vise le ferait
-    // repartir d'une echeance decalee d'une semaine.
+    // Reessais sur panne du portail, jamais sur identifiants refuses. Les
+    // fenetres viennent du cycle : c'est lui qui sait si la cantine est due
+    // aujourd'hui et si la famille est en pause.
     const resultat = await reessayer(
-      () => verifierParent(cfg, { aujourdhui: ctx.aujourdhui, semaines: 1, trace: ctx.trace }),
+      () => verifierParent(cfg, { aujourdhui: ctx.aujourdhui, fenetres: ctx.fenetres, trace: ctx.trace }),
       { trace: ctx.trace },
     );
 
     await succes(compte.parentId);
 
-    const { inconnus } = resultat.analyse;
+    const { inconnus, absentes, fenetresDepassees } = resultat.analyse;
+    const signaux = {
+      ...(inconnus.length ? { inconnus } : {}),
+      ...(absentes.length ? { absentes } : {}),
+      ...(fenetresDepassees.length ? { depassees: fenetresDepassees } : {}),
+    };
     if (inconnus.length) {
       // Traites comme non reserves, donc sans risque de rappel manquant, mais
       // a classer dans ETATS_RESERVES ou ETATS_NON_RESERVES. Le CLI le signale
@@ -243,12 +354,32 @@ async function traiterParent(
           "traite(s) comme non reserve(s)",
       );
     }
+    if (absentes.length) {
+      ctx.trace(
+        `parent ${compte.parentId} : surveillance(s) demandee(s) mais absente(s) du ` +
+          `portail : ${absentes.join(", ")} — aucune alerte ne pourra partir dessus`,
+      );
+    }
+    if (fenetresDepassees.length) {
+      // Des pointages interroges ont deja depasse leur echeance : la fenetre
+      // calculee arrive trop tard, l'alerte ne servirait plus a rien. C'est le
+      // seul signal qui rattrape une regle de delai erronee.
+      ctx.trace(
+        `parent ${compte.parentId} : FENETRE TROP TARDIVE pour ` +
+          `${fenetresDepassees.join(", ")} — la regle de delai est a revoir`,
+      );
+    }
 
+    const manquantsCantine = resultat.analyse.manquants.filter((m) => m.cle === "cantine");
+    const manquantsPerisco = resultat.analyse.manquants.filter((m) => m.cle !== "cantine");
     const manquants = resultat.analyse.manquants.length;
     const reserves = resultat.analyse.reserves.length;
+    const jourDeNouvelles = (compte.joursAvant ?? []).includes(ctx.restants);
+
     const decision = decider({
       manquants,
       reserves,
+      jourDeNouvelles,
       joursRestants: ctx.restants,
       joursSilencieux: compte.joursSilencieux ?? [],
     });
@@ -258,8 +389,10 @@ async function traiterParent(
       // distinguer de "tout est reserve" evite d'annoncer au parent une semaine
       // couverte pendant les vacances, et rend le cas lisible dans les logs.
       const statut = manquants === 0 && reserves === 0 ? "rien_a_verifier" : "rien_a_signaler";
-      return { ...base, statut, manquants: 0, ...(inconnus.length ? { inconnus } : {}) };
+      return { ...base, statut, manquants: 0, ...signaux };
     }
+
+    const cleEnvoi = { parentId: compte.parentId, semaineVisee: iso(ctx.semaine), joursAvant: ctx.restants };
 
     // Une confirmation ne doit pas suivre un rappel deja parti le meme jour
     // pour la meme semaine : le parent qui vient de reserver recevrait, trois
@@ -267,17 +400,18 @@ async function traiterParent(
     // bien. La cle d'unicite ne l'en empeche pas, puisque `type` en fait
     // partie — c'est justement ce qui permet au rappel de passer apres une
     // confirmation, le sens qui, lui, rattrape une annulation de derniere
-    // minute.
+    // minute. Le garde vaut pour N'IMPORTE quel rappel du jour, quel que soit
+    // son perimetre.
     if (decision === "confirmation") {
       const [rappelParti] = await db
         .select({ id: envois.id })
         .from(envois)
         .where(
           and(
-            eq(envois.parentId, compte.parentId),
-            eq(envois.semaineVisee, iso(ctx.semaine)),
-            eq(envois.joursAvant, ctx.restants),
-            eq(envois.type, "rappel"),
+            eq(envois.parentId, cleEnvoi.parentId),
+            eq(envois.semaineVisee, cleEnvoi.semaineVisee),
+            eq(envois.joursAvant, cleEnvoi.joursAvant),
+            inArray(envois.type, RAPPELS),
           ),
         )
         .limit(1);
@@ -285,38 +419,58 @@ async function traiterParent(
     }
 
     // L'anti-doublon est porte par la contrainte d'unicite : si l'insertion ne
-    // rend aucune ligne, le message est deja parti et on n'envoie rien.
-    const insere = await db
-      .insert(envois)
-      .values({
-        parentId: compte.parentId,
-        semaineVisee: iso(ctx.semaine),
-        joursAvant: ctx.restants,
-        type: decision,
-      })
-      .onConflictDoNothing()
-      .returning({ id: envois.id });
+    // rend aucune ligne, le message est deja parti et on n'envoie rien. Une
+    // ligne PAR PERIMETRE : le mail n'emportera que les sections dont le
+    // creneau etait encore libre, sinon on renverrait ce qui vient de partir.
+    const aPoser: TypeEnvoi[] =
+      decision === "confirmation"
+        ? ["confirmation"]
+        : [
+            ...(manquantsCantine.length ? (["rappel_cantine"] as TypeEnvoi[]) : []),
+            ...(manquantsPerisco.length ? (["rappel_periscolaire"] as TypeEnvoi[]) : []),
+          ];
 
-    if (insere.length === 0) {
+    const poses: { id: string; type: TypeEnvoi }[] = [];
+    for (const type of aPoser) {
+      const [ligne] = await db
+        .insert(envois)
+        .values({ ...cleEnvoi, type })
+        .onConflictDoNothing()
+        .returning({ id: envois.id });
+      if (ligne) poses.push({ id: ligne.id, type });
+    }
+
+    if (poses.length === 0) {
       return { ...base, statut: "deja_notifie", manquants };
     }
 
-    const liens = liensPour(compte.parentId);
+    const liens = liensPour(compte.parentId, iso(ctx.semaine));
     const message =
       decision === "rappel"
         ? mailRappel({
-            manquants: resultat.analyse.manquants,
-            semaine: ctx.semaine,
-            echeance: ctx.echeance,
-            joursRestants: ctx.restants,
-            // Urgent quand l'echeance tombe aujourd'hui : derniere occasion.
-            urgent: ctx.restants === 0,
+            aujourdhui: ctx.aujourdhui,
+            cantine: poses.some((p) => p.type === "rappel_cantine")
+              ? {
+                  manquants: manquantsCantine,
+                  semaine: ctx.semaine,
+                  echeance: ctx.echeance,
+                  joursRestants: ctx.restants,
+                }
+              : null,
+            periscolaire: poses.some((p) => p.type === "rappel_periscolaire")
+              ? manquantsPerisco
+              : [],
             liens,
           })
         : mailConfirmation({
-            semaine: ctx.semaine,
-            echeance: ctx.echeance,
-            reserves: resultat.analyse.reserves.length,
+            cantine: ctx.fenetres.some((f) => f.cle === "cantine")
+              ? {
+                  semaine: ctx.semaine,
+                  echeance: ctx.echeance,
+                  reserves: resultat.analyse.reserves.filter((r) => r.cle === "cantine").length,
+                }
+              : null,
+            periscolaire: { jours: joursRegardes(ctx.fenetres) },
             liens,
           });
 
@@ -328,16 +482,17 @@ async function traiterParent(
         html: message.html,
       });
     } catch (e) {
-      // La ligne d'envoi a ete posee AVANT l'expedition : c'est elle qui tient
-      // lieu de verrou anti-doublon. L'envoi ayant echoue, il faut la liberer,
-      // sinon le rejeu du filet la verrait et conclurait que le message est
-      // deja parti. Une panne passagere de l'expediteur deviendrait un rappel
-      // definitivement perdu — le seul echec vraiment grave de ce service.
+      // Les lignes d'envoi ont ete posees AVANT l'expedition : ce sont elles
+      // qui tiennent lieu de verrou anti-doublon. L'envoi ayant echoue, il faut
+      // toutes les liberer, sinon le rejeu du filet les verrait et conclurait
+      // que le message est deja parti. Une panne passagere de l'expediteur
+      // deviendrait un rappel definitivement perdu — le seul echec vraiment
+      // grave de ce service.
       try {
-        await db.delete(envois).where(eq(envois.id, insere[0].id));
+        await db.delete(envois).where(inArray(envois.id, poses.map((p) => p.id)));
       } catch (menage) {
         ctx.trace(
-          `parent ${compte.parentId} : creneau d'envoi non libere apres echec ` +
+          `parent ${compte.parentId} : creneau(x) d'envoi non libere(s) apres echec ` +
             `(${(menage as Error).message})`,
         );
       }
@@ -358,7 +513,7 @@ async function traiterParent(
       ...base,
       statut: decision === "rappel" ? "notifie" : "confirme",
       manquants,
-      ...(inconnus.length ? { inconnus } : {}),
+      ...signaux,
     };
   } catch (e) {
     const erreur = e as Error;

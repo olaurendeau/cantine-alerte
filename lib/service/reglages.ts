@@ -14,6 +14,16 @@ import {
 import { reessayer } from "../reessayer.ts";
 import { decider } from "./decision.ts";
 import { liensPour } from "./verification.ts";
+import {
+  ecartesParReglages,
+  fenetresPour,
+  exclusionsDepuisEnv,
+  joursRestants as calculerRestants,
+  prochaineEcheance,
+  semaineVisee,
+  type ReglagesSurveillance,
+} from "../portail/index.ts";
+import { LIBELLES_SURVEILLANCE } from "../portail/types.ts";
 
 export type Reglages = {
   email: string;
@@ -27,7 +37,22 @@ export type Reglages = {
   destinataires: string[];
   joursAvant: number[];
   joursSilencieux: number[];
+  /**
+   * Jours de semaine AVEC cantine attendue, 0 = lundi.
+   *
+   * Rendu en positif pour l'ecran, alors que la base stocke l'inverse
+   * (`jours_sans_cantine`) : cocher est ce que fait le parent, mais c'est la
+   * liste vide qui doit valoir « surveiller partout » cote base.
+   */
+  joursCantine: number[];
+  joursMatin: number[];
+  joursSoir: number[];
+  /** Semaine visee mise en silence pour la cantine (YYYY-MM-DD), ou null. */
+  pauseSemaine: string | null;
 };
+
+/** Tous les jours de semaine, 0 = lundi. Reference de la conversion positif/negatif. */
+const TOUS_LES_JOURS = [0, 1, 2, 3, 4, 5, 6];
 
 export async function chargerReglages(parentId: string): Promise<Reglages | null> {
   const [parent] = await db
@@ -47,7 +72,14 @@ export async function chargerReglages(parentId: string): Promise<Reglages | null
     .where(eq(identifiantsPortail.parentId, parentId));
 
   const [rap] = await db
-    .select({ joursAvant: rappels.joursAvant, joursSilencieux: rappels.joursSilencieux })
+    .select({
+      joursAvant: rappels.joursAvant,
+      joursSilencieux: rappels.joursSilencieux,
+      joursSansCantine: rappels.joursSansCantine,
+      joursMatin: rappels.joursMatin,
+      joursSoir: rappels.joursSoir,
+      pauseSemaine: rappels.pauseSemaine,
+    })
     .from(rappels)
     .where(eq(rappels.parentId, parentId));
 
@@ -67,7 +99,53 @@ export async function chargerReglages(parentId: string): Promise<Reglages | null
     destinataires: adresses.map((a) => a.email),
     joursAvant: rap?.joursAvant ?? [],
     joursSilencieux: rap?.joursSilencieux ?? [],
+    joursCantine: TOUS_LES_JOURS.filter((j) => !(rap?.joursSansCantine ?? []).includes(j)),
+    joursMatin: rap?.joursMatin ?? [],
+    joursSoir: rap?.joursSoir ?? [],
+    pauseSemaine: rap?.pauseSemaine ?? null,
   };
+}
+
+/**
+ * Les reglages de surveillance d'une famille, tels que `fenetresPour` les
+ * attend. Charges a part de `chargerReglages`, qui sert l'affichage.
+ */
+async function surveillanceDe(parentId: string): Promise<ReglagesSurveillance> {
+  const [rap] = await db
+    .select({
+      joursAvant: rappels.joursAvant,
+      joursSansCantine: rappels.joursSansCantine,
+      joursMatin: rappels.joursMatin,
+      joursSoir: rappels.joursSoir,
+      pauseSemaine: rappels.pauseSemaine,
+    })
+    .from(rappels)
+    .where(eq(rappels.parentId, parentId));
+  return {
+    joursAvant: rap?.joursAvant ?? [],
+    joursSansCantine: rap?.joursSansCantine ?? [],
+    joursMatin: rap?.joursMatin ?? [],
+    joursSoir: rap?.joursSoir ?? [],
+    pauseSemaine: rap?.pauseSemaine ?? null,
+  };
+}
+
+/**
+ * Les fenetres d'une verification a la demande.
+ *
+ * On force le regard sur la cantine — `joursAvant` ramene au jour meme, pause
+ * ignoree — parce que le parent qui clique veut justement voir l'etat de sa
+ * semaine, quel que soit le jour et meme s'il vient de demander le silence.
+ * Les jours decoches, eux, restent appliques : l'ecran doit montrer ce que le
+ * service fera vraiment.
+ */
+function fenetresDeControle(aujourdhui: Date, reglages: ReglagesSurveillance) {
+  const restants = calculerRestants(aujourdhui, prochaineEcheance(aujourdhui));
+  return fenetresPour({
+    aujourdhui,
+    exclusions: exclusionsDepuisEnv(process.env),
+    reglages: { ...reglages, joursAvant: [restants], pauseSemaine: null },
+  });
 }
 
 /**
@@ -85,7 +163,15 @@ export async function enregistrerIdentifiants(
   const cfg = configDepuisEnv(process.env, { email: portailEmail, password: motDePasse });
 
   try {
-    await reessayer(() => verifierParent(cfg, { aujourdhui: aujourdhuiParis() }));
+    const aujourdhui = aujourdhuiParis();
+    // La cantine du jour suffit a prouver que les identifiants passent : une
+    // seule fenetre, donc une seule requete.
+    await reessayer(() =>
+      verifierParent(cfg, {
+        aujourdhui,
+        fenetres: fenetresDeControle(aujourdhui, { joursAvant: [], joursSansCantine: [], joursMatin: [], joursSoir: [], pauseSemaine: null }),
+      }),
+    );
   } catch (e) {
     const erreur = e as Error;
     if (erreur instanceof ErreurIdentifiants) {
@@ -145,12 +231,73 @@ export async function enregistrerRappels(
     .onConflictDoUpdate({ target: rappels.parentId, set: { joursAvant, joursSilencieux } });
 }
 
+/**
+ * Ce que l'on surveille, jour de semaine par jour de semaine (0 = lundi).
+ *
+ * L'ecran raisonne en positif — on coche ce que l'on veut surveiller — mais la
+ * cantine est stockee en negatif, pour que la liste vide, donc le defaut,
+ * vaille « alerter tous les jours ». Le periscolaire garde le positif, ou le
+ * defaut sur est l'inverse : on ne peut pas alerter sur un service que la
+ * famille n'utilise pas.
+ */
+export async function enregistrerSurveillance(
+  parentId: string,
+  { cantine, matin, soir }: { cantine: number[]; matin: number[]; soir: number[] },
+): Promise<void> {
+  const propre = (jours: number[]) =>
+    [...new Set(jours.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))].sort((a, b) => a - b);
+
+  const joursSansCantine = TOUS_LES_JOURS.filter((j) => !propre(cantine).includes(j));
+  const valeurs = {
+    joursSansCantine,
+    joursMatin: propre(matin),
+    joursSoir: propre(soir),
+  };
+  await db
+    .insert(rappels)
+    .values({ parentId, ...valeurs })
+    .onConflictDoUpdate({ target: rappels.parentId, set: valeurs });
+}
+
+/**
+ * « Pas de cantine cette semaine ».
+ *
+ * On stocke la semaine visee et non une date de fin : quand l'echeance passe,
+ * la semaine visee change, la valeur ne correspond plus et la cantine reprend
+ * seule. Rien a purger, et recliquer est sans effet.
+ */
+export async function mettreEnPause(parentId: string, semaine: string): Promise<void> {
+  await db
+    .insert(rappels)
+    .values({ parentId, pauseSemaine: semaine })
+    .onConflictDoUpdate({ target: rappels.parentId, set: { pauseSemaine: semaine } });
+}
+
+export async function reprendreAlertes(parentId: string): Promise<void> {
+  await db.update(rappels).set({ pauseSemaine: null }).where(eq(rappels.parentId, parentId));
+}
+
+/** La semaine que le bouton de pause ferait taire si on cliquait maintenant. */
+export const semaineAMettreEnPause = (aujourdhui: Date): string =>
+  iso(semaineVisee(prochaineEcheance(aujourdhui)));
+
 export type Apercu = {
   semaine: string;
   echeance: string;
   joursRestants: number;
   reserves: number;
   manquants: { date: string; enfant: string }[];
+  /** Ce qu'il manque cote garderie, avec le moment concerne. */
+  periscolaire: { date: string; enfant: string; moment: string }[];
+  /**
+   * Jours actionnables qu'un reglage a ecartes. Les montrer est ce qui rend un
+   * reglage trop restrictif detectable depuis l'ecran de verification.
+   */
+  ecartes: { date: string; enfant: string }[];
+  /** Surveillances demandees qui n'existent pas sur ce portail. */
+  absentes: string[];
+  /** Surveillances dont la fenetre arrive apres l'echeance reelle du portail. */
+  depassees: string[];
   /**
    * Ni repas reserve, ni repas a reserver : le portail ne propose rien sur
    * cette fenetre (vacances, hors annee scolaire). Meme distinction que
@@ -187,7 +334,9 @@ export async function verifierMaintenant(
   });
 
   try {
-    const r = await reessayer(() => verifierParent(cfg, { aujourdhui: aujourdhuiParis() }));
+    const aujourdhui = aujourdhuiParis();
+    const fenetres = fenetresDeControle(aujourdhui, await surveillanceDe(parentId));
+    const r = await reessayer(() => verifierParent(cfg, { aujourdhui, fenetres }));
     await db
       .update(identifiantsPortail)
       .set({ verifieLe: new Date(), echecsConsecutifs: 0, derniereErreur: null, alerteEchecLe: null })
@@ -199,7 +348,22 @@ export async function verifierMaintenant(
         echeance: iso(r.echeance),
         joursRestants: r.joursRestants,
         reserves: r.analyse.reserves.length,
-        manquants: r.analyse.manquants.map((m) => ({ date: iso(m.date), enfant: m.enfant })),
+        manquants: r.analyse.manquants
+          .filter((m) => m.cle === "cantine")
+          .map((m) => ({ date: iso(m.date), enfant: m.enfant })),
+        periscolaire: r.analyse.manquants
+          .filter((m) => m.cle !== "cantine")
+          .map((m) => ({
+            date: iso(m.date),
+            enfant: m.enfant,
+            moment: LIBELLES_SURVEILLANCE[m.cle],
+          })),
+        ecartes: ecartesParReglages(r.analyse).map((c) => ({
+          date: iso(c.date),
+          enfant: c.enfant,
+        })),
+        absentes: r.analyse.absentes.map((c) => LIBELLES_SURVEILLANCE[c]),
+        depassees: r.analyse.fenetresDepassees.map((c) => LIBELLES_SURVEILLANCE[c]),
         rienAVerifier: r.analyse.reserves.length === 0 && r.analyse.manquants.length === 0,
         inconnus: r.analyse.inconnus,
       },
@@ -265,6 +429,7 @@ export async function envoyerMailTest(
     .select({ joursSilencieux: rappels.joursSilencieux })
     .from(rappels)
     .where(eq(rappels.parentId, parentId));
+  const surveillance = await surveillanceDe(parentId);
 
   const { dechiffrer } = await import("../crypto.ts");
   const cfg = configDepuisEnv(process.env, {
@@ -274,7 +439,12 @@ export async function envoyerMailTest(
 
   let r;
   try {
-    r = await reessayer(() => verifierParent(cfg, { aujourdhui: date }));
+    // La date choisie sert de « aujourd'hui » : elle determine l'echeance, la
+    // semaine visee et le passage en urgent. On force le regard sur la cantine,
+    // sans quoi choisir une date hors des jours de rappel ne montrerait rien.
+    r = await reessayer(() =>
+      verifierParent(cfg, { aujourdhui: date, fenetres: fenetresDeControle(date, surveillance) }),
+    );
   } catch (e) {
     const erreur = e as Error;
     return {
@@ -291,6 +461,9 @@ export async function envoyerMailTest(
   const decision = decider({
     manquants,
     reserves,
+    // Le regard sur la cantine est force ci-dessus : ce jour compte donc comme
+    // un jour de nouvelles, sinon le test ne rendrait jamais de confirmation.
+    jourDeNouvelles: true,
     joursRestants: r.joursRestants,
     joursSilencieux: rap?.joursSilencieux ?? [],
   });
@@ -308,21 +481,29 @@ export async function envoyerMailTest(
     };
   }
 
-  const liens = liensPour(parentId);
+  const liens = liensPour(parentId, iso(r.semaine));
+  const manquantsCantine = r.analyse.manquants.filter((m) => m.cle === "cantine");
+  const manquantsPerisco = r.analyse.manquants.filter((m) => m.cle !== "cantine");
   const message =
     decision === "rappel"
       ? mailRappel({
-          manquants: r.analyse.manquants,
-          semaine: r.semaine,
-          echeance: r.echeance,
-          joursRestants: r.joursRestants,
-          urgent: r.joursRestants === 0,
+          aujourdhui: date,
+          cantine: {
+            manquants: manquantsCantine,
+            semaine: r.semaine,
+            echeance: r.echeance,
+            joursRestants: r.joursRestants,
+          },
+          periscolaire: manquantsPerisco,
           liens,
         })
       : mailConfirmation({
-          semaine: r.semaine,
-          echeance: r.echeance,
-          reserves,
+          cantine: {
+            semaine: r.semaine,
+            echeance: r.echeance,
+            reserves: r.analyse.reserves.filter((x) => x.cle === "cantine").length,
+          },
+          periscolaire: null,
           liens,
         });
 
