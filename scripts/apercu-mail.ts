@@ -37,6 +37,15 @@ const cible = (date: string, enfant: string): Cible => ({
   date: jour(date),
   enfant,
   prestation: "Repas enfant",
+  cle: "cantine",
+  code: "ETAT_NON_RESERVE",
+});
+
+const perisco = (date: string, enfant: string, cle: "matin" | "soir"): Cible => ({
+  date: jour(date),
+  enfant,
+  prestation: cle === "matin" ? "Garderie matin" : "Garderie soir",
+  cle,
   code: "ETAT_NON_RESERVE",
 });
 
@@ -52,47 +61,75 @@ const depareilles = [
 const semaine = jour("2026-09-21");
 const echeance = jour("2026-09-14");
 
+// Le periscolaire se compte depuis aujourd'hui : J+1 est le dernier jour utile,
+// J+2 le preavis.
+const aujourdhui = jour("2026-09-09");
+const demain = "2026-09-10";
+const apresDemain = "2026-09-11";
+const cantine = (joursRestants: number) => ({
+  manquants: fratrie,
+  semaine,
+  echeance,
+  joursRestants,
+});
+
 const cas: { nom: string; titre: string; mail: Mail }[] = [
   {
     nom: "rappel",
     titre: "Rappel — 6 jours avant l'échéance",
-    mail: mailRappel({
-      manquants: fratrie,
-      semaine,
-      echeance,
-      joursRestants: 6,
-      urgent: false,
-      liens,
-    }),
+    mail: mailRappel({ aujourdhui, cantine: cantine(6), liens }),
   },
   {
     nom: "rappel-urgent",
     titre: "Rappel — dernier jour",
-    mail: mailRappel({
-      manquants: fratrie,
-      semaine,
-      echeance,
-      joursRestants: 0,
-      urgent: true,
-      liens,
-    }),
+    mail: mailRappel({ aujourdhui, cantine: cantine(0), liens }),
   },
   {
     nom: "rappel-jours-differents",
     titre: "Rappel — enfants aux jours différents",
     mail: mailRappel({
-      manquants: depareilles,
-      semaine,
-      echeance,
-      joursRestants: 2,
-      urgent: false,
+      aujourdhui,
+      cantine: { manquants: depareilles, semaine, echeance, joursRestants: 2 },
+      liens,
+    }),
+  },
+  {
+    nom: "rappel-periscolaire",
+    titre: "Rappel — périscolaire seul, dernier jour",
+    mail: mailRappel({
+      aujourdhui,
+      cantine: null,
+      periscolaire: [
+        perisco(demain, "Martin", "matin"),
+        perisco(demain, "Martin", "soir"),
+        perisco(apresDemain, "Soline", "matin"),
+      ],
+      liens,
+    }),
+  },
+  {
+    nom: "rappel-mixte",
+    titre: "Rappel — cantine et périscolaire",
+    mail: mailRappel({
+      aujourdhui,
+      cantine: cantine(4),
+      periscolaire: [perisco(demain, "Martin", "matin"), perisco(apresDemain, "Soline", "soir")],
       liens,
     }),
   },
   {
     nom: "confirmation",
     titre: "Confirmation — tout est réservé",
-    mail: mailConfirmation({ semaine, echeance, reserves: 8, liens }),
+    mail: mailConfirmation({ cantine: { semaine, echeance, reserves: 8 }, liens }),
+  },
+  {
+    nom: "confirmation-mixte",
+    titre: "Confirmation — cantine et périscolaire",
+    mail: mailConfirmation({
+      cantine: { semaine, echeance, reserves: 8 },
+      periscolaire: { jours: [jour(demain), jour(apresDemain)] },
+      liens,
+    }),
   },
   {
     nom: "lien-connexion",

@@ -34,18 +34,21 @@ const { jourDepuisIso } = await import("../lib/portail/dates.ts");
 
 const jours = ["2026-09-21", "2026-09-22", "2026-09-24", "2026-09-25"];
 const exemple = mailRappel({
-  manquants: ["Martin", "Soline"].flatMap((enfant) =>
-    jours.map((d) => ({
-      date: jourDepuisIso(d),
-      enfant,
-      prestation: "Repas enfant",
-      code: "ETAT_NON_RESERVE",
-    })),
-  ),
-  semaine: jourDepuisIso("2026-09-21"),
-  echeance: jourDepuisIso("2026-09-14"),
-  joursRestants: 6,
-  urgent: false,
+  aujourdhui: jourDepuisIso("2026-09-08"),
+  cantine: {
+    manquants: ["Martin", "Soline"].flatMap((enfant) =>
+      jours.map((d) => ({
+        date: jourDepuisIso(d),
+        enfant,
+        prestation: "Repas enfant",
+        cle: "cantine" as const,
+        code: "ETAT_NON_RESERVE",
+      })),
+    ),
+    semaine: jourDepuisIso("2026-09-21"),
+    echeance: jourDepuisIso("2026-09-14"),
+    joursRestants: 6,
+  },
   liens: {
     reservation: "https://parents.logiciel-enfance.fr/argentiere",
     reglages: `${process.env.APP_URL ?? "http://localhost:3000"}/reglages`,
