@@ -20,6 +20,12 @@ Feuille de route :
   seul des deux à tourner tous les jours.
 - **Phase 2 — faite.** App Next.js : inscription par lien magique, réglages (identifiants portail,
   destinataires multiples, jours de rappel), cron quotidien, envoi par Brevo, page d'administration.
+- **Phase 3 — faite.** Surveillance par jour de semaine et par prestation : la famille décoche les
+  jours sans cantine, coche les jours de périscolaire matin/soir. Le périscolaire suit une **seconde
+  règle d'échéance** (veille minuit), donc sa propre fenêtre. Un seul mail par jour couvre les deux.
+  Un bouton dans le rappel met la cantine en silence jusqu'à la prochaine échéance.
+  ⚠️ **La règle « veille minuit » du périscolaire est déduite, pas observée** : elle n'a jamais été
+  confrontée au portail. `fenetresDepassees` (cf. §3) est le signal qui la dénoncerait.
 
 ## Commandes
 
@@ -58,9 +64,9 @@ node scripts/verifier.ts --date 2026-09-08,2026-09-14   # simule des jours, affi
 node scripts/verifier.ts --dump 2>/dev/null | jq        # payload brut (stdout = JSON pur)
 node scripts/verifier.ts --verbose                      # trace chaque étape HTTP
 node scripts/cron.ts --date 2026-09-10                  # exécute un cycle de rappel complet
-node scripts/seed.ts --rappels 0,1,4                    # crée un compte de test depuis le .env
+node scripts/seed.ts --rappels 0,1,4 --matin 0,3        # crée un compte de test depuis le .env
 node scripts/lien.ts moi@exemple.fr                     # génère un lien de connexion
-node scripts/apercu-mail.ts                             # rend les 8 variantes de mail dans apercu/
+node scripts/apercu-mail.ts                             # rend les 11 variantes dans apercu/
 node scripts/tester-mail.ts moi@exemple.fr              # envoie un vrai gabarit
 ```
 
@@ -134,8 +140,21 @@ Vérifiée en conditions réelles. `data` contient notamment :
 - **`data.individus`** — les enfants, `fkindividu` + `prenom`.
 
 Le portail d'Argentière expose 4 prestations : `Gmat` (Garderie matin), `Gsoir` (Garderie soir),
-**`RepE` (Repas enfant) — la cantine**, `ACCu` (Accueil d'urgence). Le script cible `RepE` par défaut,
-surchargeable par `CANTINE_PRESTATION` (une regex testée sur `code` et `libelle`).
+**`RepE` (Repas enfant) — la cantine**, `ACCu` (Accueil d'urgence). Trois d'entre elles sont
+surveillées, chacune par sa propre regex testée sur `code` et `libelle` :
+
+| Clé | Variable | Défaut | Requise ? |
+|---|---|---|---|
+| `cantine` | `CANTINE_PRESTATION` | `RepE\|Repas enfant` | **oui** — absente = `ErreurStructure` |
+| `matin` | `CANTINE_PRESTATION_MATIN` | `Gmat\|Garderie matin` | non — absente = remontée dans `absentes` |
+| `soir` | `CANTINE_PRESTATION_SOIR` | `Gsoir\|Garderie soir` | non — idem |
+
+Seule la cantine est requise : une collectivité sans garderie ne doit pas casser le service pour
+tout le monde. Mais le silence qui en découle doit se voir, d'où `Analyse.absentes`, remontée dans
+les journaux du cron, dans `/api/cron` et dans l'écran « vérifier maintenant ».
+
+⚠️ **Une prestation réclamée par deux motifs lève.** Ses pointages seraient comptés une fois par
+fenêtre, et la config fautive passerait inaperçue derrière des chiffres simplement trop grands.
 
 États rencontrés, rapprochés de la légende de l'UI. Les captures qui ont servi à ce recoupement sont
 dans `docs/screenshots-ui/`, **volontairement hors dépôt** (`.gitignore`) : elles montrent les nom et
@@ -154,6 +173,15 @@ elles.
 « Bloqué à la réservation » remonte sous **deux codes** selon la cause (hors période scolaire vs
 échéance dépassée) ; `etat` n'est pas discriminant, c'est `code_etat` qui fait foi.
 
+⚠️ **Cette distinction porte le seul garde-fou de la règle périscolaire.** `ETAT_PRESTATION_FERMEE`
+dit « jour non proposé » (mercredi, vacances), `ETAT_BLOCAGE_DEPASSE` dit « échéance déjà passée ».
+Un pointage de garderie à J+1 qui revient en `ETAT_BLOCAGE_DEPASSE` signifie donc que notre fenêtre
+est calculée **trop tard** : on interroge des jours sur lesquels le parent ne peut plus agir, et
+l'alerte n'arriverait jamais. Ces clés remontent dans `Analyse.fenetresDepassees`, dans les journaux
+du cron et dans `/api/cron`. Le mode d'échec inverse — une garderie qui n'ouvrirait à la réservation
+que plus tard — reste **un angle mort** : elle reviendrait en `ETAT_PRESTATION_FERMEE`, indistinguable
+de vacances.
+
 `ETATS_RESERVES` est une **liste blanche** : tout code hors liste compte comme non réservé et
 déclenche en plus un avertissement `etat(s) non repertorie(s)` pour être classé. Ne pas inverser
 cette asymétrie — une alerte en trop est bénigne, une alerte manquante fait rater le repas.
@@ -167,12 +195,51 @@ bloqué à la réservation » — l'avertissement les signalera à leur premièr
 
 ### 4. Règle métier
 
-**Les réservations sont à effectuer avant le lundi minuit pour la semaine suivante.** Deux fonctions
-suffisent :
+**Deux règles coexistent**, et c'est la source de toute la structure de `lib/portail` :
+
+| | Échéance | Fenêtre interrogée le jour T |
+|---|---|---|
+| Cantine | lundi minuit, pour la semaine suivante | `[semaineVisee, semaineVisee + 6]` |
+| Périscolaire matin / soir | **veille minuit** | `[T+1, T+2]` |
+
+Pour la cantine, deux fonctions suffisent :
 
 - `prochaineEcheance()` → prochain lundi, aujourd'hui inclus si on est lundi (la journée reste
   ouverte jusqu'à minuit) ;
 - `semaineVisee()` → lundi de la semaine que cette échéance verrouille, soit échéance + 7.
+
+Pour le périscolaire, `fenetreVeille()` : la réservation d'un jour `D` ferme au minuit qui **ouvre**
+`D`, donc le dernier jour utile est `D-1` et l'avant-dernier `D-2` — vus d'aujourd'hui, `T+1` et
+`T+2`. Le cron étant quotidien, chaque jour d'école est vu deux fois, le lundi par les passages du
+samedi et du dimanche.
+
+### `fenetresPour()` est le point de vérité unique
+
+Tout le reste en découle mécaniquement. Une fenêtre cantine non construite, et il n'y a ni manquants,
+ni réservés, ni section de mail, ni confirmation — **sans une seule condition ailleurs**. Porter la
+même règle dans `decider()` et dans la composition du mail l'éparpillerait en conditions devant
+rester d'accord entre elles.
+
+```
+jours_avant vide                      → aucune fenetre : la famille est ignoree (interrupteur general)
+fenetre cantine        construite ssi  restants ∈ jours_avant  ET  pause_semaine ≠ semaine visee
+fenetre matin / soir   construite ssi  la surveillance a ≥ 1 jour coche
+                                       ET  jourSemaine(T+1) ou jourSemaine(T+2) y figure
+aucune fenetre construite             → on n'appelle PAS le portail
+```
+
+⚠️ **`jours_avant` vide est l'interrupteur général**, pas seulement une cadence de cantine. C'est ce
+que pose le lien « Ne plus recevoir de rappels ». Sans ce garde, le périscolaire — qui ne dépend pas
+des jours choisis — continuerait d'écrire à une famille désabonnée, et le lien mentirait.
+
+⚠️ **Les fenêtres ne se recouvrent pas**, mais une seule requête couvre leur union : le portail ne
+filtre rien par prestation, il renvoie déjà tout sur la plage demandée. Multiplier les requêtes
+entamerait le budget de session de 45 s pour rien.
+
+Les jours attendus sont des **jours de semaine, 0 = lundi** (`jourSemaine()`), comme `planning.jour_0`
+du portail. À ne pas confondre avec `jours_avant`, qui compte les jours **avant l'échéance**
+(0 = lundi *dernier jour*, 6 = mardi). Deux référentiels opposés, d'où des noms nettement différents
+et deux cartes séparées dans l'UI.
 
 Vérifié : le jeudi 2026-08-27, échéance lundi 2026-08-31 minuit (J-4), semaine visée 2026-09-07.
 `--semaines N` élargit aux semaines suivantes (encore ouvertes, non urgentes) ; le défaut de 1 est le
@@ -197,20 +264,33 @@ délai.
 Le champ `disabled` reste utilisé pour ce qu'il dit vraiment : ce jour n'appelle aucune action du
 parent (jour non proposé, ou échéance passée). C'est ce qui permet de se passer d'un calendrier des
 jours d'école — mercredi, week-ends et vacances remontent en `ETAT_PRESTATION_FERMEE`/`disabled` et
-sont écartés d'office. `CANTINE_EXCLUSIONS` ne sert plus qu'aux cas que le portail ignore (sortie
-scolaire avec pique-nique).
+sont écartés d'office. C'est aussi le garde-fou du périscolaire : si la règle « veille minuit » est
+fausse, les pointages reviennent verrouillés et l'on se tait, plutôt que d'alerter à tort.
 
-À savoir si on élargit `CANTINE_PRESTATION` au-delà de la cantine : **les prestations n'ont pas le
-même délai**. Sur la capture de la semaine du 31/08, Repas enfant est verrouillé alors que Garderie
-matin/soir accepte encore des réservations. La fenêtre calculée applique la règle de la cantine à
-tout ce qui est surveillé.
+Trois filtres distincts écartent un pointage des manquants, et ils ne se confondent pas :
+
+- **`disabled`** — le portail a verrouillé : le parent ne peut rien y faire ;
+- **`joursAttendus`** (par fenêtre) — la famille n'attend pas de réservation ce jour-là ;
+- **`exclusions`** (dates absolues, `CANTINE_EXCLUSIONS`) — ⚠️ **posées sur la fenêtre cantine
+  seule.** Le cas d'usage est la sortie scolaire avec pique-nique : elle supprime le repas, **pas la
+  garderie du matin**, où l'enfant est déposé à la même heure.
+
+Les deux derniers ne filtrent **que** les manquants, jamais `reserves` : un repas posé un jour non
+attendu reste un repas posé, et doit continuer d'être compté — sinon la confirmation annoncerait
+moins que la réalité. `ecartesParReglages()` rend ce que ces deux filtres ont masqué, pour que
+l'écran « vérifier maintenant » puisse le montrer : taire ce qui a été écarté rendrait un réglage
+trop restrictif indétectable.
 
 ### 5. Comparaison et notification
 
 Un manquant est un couple **(jour, enfant)** : une réservation posée pour un seul enfant ne couvre
-pas la fratrie. La notification regroupe par jour (`- lundi 21 septembre : <prenoms>`). L'alerte
-passe en **urgente** quand l'échéance tombe aujourd'hui (`J-0`), ce qui change l'objet et le délai
-annoncé (« ce soir avant minuit » au lieu de « dans 6 jours »).
+pas la fratrie. La notification regroupe par jour (`- lundi 21 septembre : <prenoms>`), et le
+périscolaire accole le moment au jour (`jeudi 18 (matin et soir)`) — sans lui le parent ne sait pas
+laquelle des deux inscriptions poser.
+
+L'alerte passe en **urgente** quand une échéance tombe cette nuit : cantine à `J-0`, ou périscolaire
+à `T+1`. Les deux disent littéralement la même chose (« ce soir avant minuit »), la formulation
+reste donc vraie dans les deux cas.
 
 La mise en forme n'appartient pas à `lib/portail`, qui ne connaît que le portail : elle vit dans
 `lib/mail`. C'est ce qui permet de refondre les mails sans toucher au métier.
@@ -242,6 +322,20 @@ Points de conception qui ont une raison d'être :
   quand un rappel est déjà parti le même jour pour la même semaine. Sans ce garde, le parent qui
   réserve après son rappel de 16 h recevrait à 19 h un second message lui annonçant que tout va
   bien. La clé d'unicité ne peut pas s'en charger, puisque `type` en fait justement partie.
+- ⚠️ **`envois.type` porte le périmètre** : `rappel_cantine`, `rappel_periscolaire`,
+  `confirmation`. Sans lui, un rappel de garderie posé à 16 h occuperait la ligne du jour, et le
+  filet de 19 h conclurait « déjà notifié » si une réservation de cantine venait d'être annulée
+  entre-temps — soit une **régression** du filet existant. Une journée normale compose **un** mail et
+  pose **deux** lignes ; le mail expédié ne contient que les sections dont l'insertion a rendu une
+  ligne, sinon on renverrait ce qui vient de partir. Le garde « pas de confirmation après un rappel »
+  vaut pour **n'importe quel** rappel du jour, quel que soit son périmètre.
+- **La pause est cantine seule, et s'exprime en semaine visée.** `rappels.pause_semaine` stocke le
+  lundi visé, pas une date de fin : quand l'échéance passe, la semaine visée change, la valeur ne
+  correspond plus et la cantine reprend **seule**. Rien à purger, recliquer est idempotent. Elle
+  éteint **rappel et confirmation** — le parent a dit « pas de cantine cette semaine », lui annoncer
+  deux jours plus tard que ses 12 repas sont réservés serait encore lui parler de cantine.
+  ⚠️ Elle n'est donc **pas** filtrable en SQL : une famille en pause reste interrogée pour son
+  périscolaire. C'est `fenetresPour` qui tranche.
 - ⚠️ **La ligne d'envoi est posée avant l'expédition, et libérée si celle-ci échoue.** L'ordre est
   volontaire : la ligne est le verrou anti-doublon, elle doit exister avant l'envoi. Mais la laisser
   après un échec ferait conclure au rejeu que le message est déjà parti, et transformerait une panne
@@ -260,6 +354,12 @@ Points de conception qui ont une raison d'être :
   — soit une alerte par jour au lieu d'une par série. Prévenir par mail n'aurait de toute façon
   aucune chance d'aboutir : c'est l'expéditeur qui est en panne. Le signal passe par le décompte
   par statut de `/api/cron` et par les journaux Vercel.
+- **Une famille qui active le périscolaire est interrogée tous les jours**, contre ~2 jours sur 7
+  auparavant. À 3 s de pause par famille dans une fonction plafonnée à 300 s, le service tient une
+  cinquantaine de comptes, et le dépassement serait **muet** : Vercel coupe la fonction et les
+  familles de fin de liste perdent leur rappel sans trace. D'où `dureeMs` et `interroges` dans la
+  réponse de `/api/cron`, et la trace par famille qui dit le temps écoulé — le plafond doit se voir
+  venir, pas se découvrir.
 - **Le throttling du portail s'applique par adresse IP**, pas par compte. Constaté en conditions
   réelles : trois connexions ratées d'affilée ont fait retourner un `429` au compte suivant, pourtant
   valide. D'où (a) la pause `CANTINE_PAUSE_MS` entre familles dans la boucle du cron, (b)
@@ -313,6 +413,11 @@ Points de conception qui ont une raison d'être :
   dans `tests/prestations.test.ts`. Le statut `rien_a_verifier` distingue ce cas de
   `rien_a_signaler` dans les journaux, et `verifierMaintenant` fait la même distinction — c'est
   l'écran où le parent vérifie que le service fonctionne.
+- **La confirmation parle du périmètre réellement regardé, en deux lignes distinctes.** La cantine
+  se confirme sur une semaine, le périscolaire sur deux jours : une phrase globale « tout est
+  réservé » affirmerait une couverture de la garderie sur des jours qu'on n'a jamais regardés. Un
+  passage déclenché par le seul périscolaire ne confirme donc **jamais** — d'où `jourDeNouvelles`
+  dans `decider()`.
 - **La page admin ne charge jamais `mdp_chiffre` ni `portail_email`.** L'administrateur n'a aucun
   besoin des identifiants des familles : la requête ne les sélectionne pas.
 - ⚠️ **La réponse de `/api/cron` est agrégée, sans aucune adresse.** Elle transite par le filet
@@ -359,6 +464,18 @@ Contraintes de rendu à ne pas « simplifier » :
   seul, le bouton y deviendrait un texte nu.
 - **`echapper()` sur toute donnée non littérale.** Les prénoms viennent du portail, les motifs
   d'erreur de messages tiers. En texte brut le risque n'existait pas ; en HTML c'est une injection.
+- **Sections dans un ordre fixe** cantine puis périscolaire, chacune portant sa propre échéance.
+  L'encart de tête et l'objet portent déjà la plus pressante, donc l'ordre du corps ne joue plus sur
+  l'urgence — seulement sur l'habitude de lecture, et un message récurrent dont la structure bouge se
+  lit moins vite. **L'objet, lui, épouse le périmètre le plus pressant** et relègue l'autre en
+  suffixe : un objet à parts égales rendrait « Dernier jour » littéralement faux pour l'un des deux.
+  ⚠️ Une famille sans périscolaire doit retrouver l'objet d'origine **au caractère près** — c'est un
+  test de non-régression de `tests/messages.test.ts`.
+- **Le bouton de pause n'apparaît que sur un rappel contenant une section cantine.** Il ne coupe que
+  la cantine : l'afficher sur un message qui ne parle que de garderie promettrait un silence qu'il ne
+  tient pas. Le libellé le nomme (« Pas de cantine cette semaine ») et la page de confirmation dit
+  explicitement ce qu'il **ne** coupe pas, sinon le premier mail de garderie du lendemain passerait
+  pour un bug.
 - **Un emoji ouvre l'objet** des rappels et des confirmations : ✅ tout est réservé, ⚠️ il manque
   des repas, 🚨 il manque des repas et l'échéance est à deux jours ou moins. C'est le premier
   caractère, donc la seule position que l'aperçu mobile ne tronque jamais. Des glyphes parlants et
@@ -368,13 +485,17 @@ Contraintes de rendu à ne pas « simplifier » :
   formulations vraies ce jour-là uniquement (« ce soir avant minuit », encart rouge), l'emoji
   n'affirme rien de tel et peut donc prévenir plus tôt. Ne pas les fusionner — avancer « Dernier
   jour » à J-2 rendrait le message faux et userait l'alerte avant le vrai dernier jour.
+  ⚠️ **`SEUIL_PRESSE` ne se transpose pas tel quel au périscolaire.** Il a été calibré sur un cycle
+  de sept jours, où « il reste deux jours » est vraiment la dernière ligne droite ; sur un cycle de
+  deux jours il couvrirait tout le cycle et l'emoji ne porterait plus aucune information. On
+  transpose donc l'**intention**, pas la valeur : gyrophare au dernier jour utile seulement (`T+1`).
 - **Preheader** masqué portant l'échéance : c'est lui qui rend le mail utile depuis la liste des
   messages, sans l'ouvrir.
 - **Ni blanc ni noir purs**, pour rester lisible quand un client inverse les couleurs.
 - Le poids du bouton suit l'urgence : `ton: "secondaire"` sur la confirmation, un bouton plein sur
   un message disant « rien à faire » invitant à cliquer sans raison.
 
-`node scripts/apercu-mail.ts` rend les huit variantes dans `apercu/`, avec un index qui les compare
+`node scripts/apercu-mail.ts` rend les onze variantes dans `apercu/`, avec un index qui les compare
 à 375 px et 600 px. Un aperçu navigateur valide la mise en page, **pas** la compatibilité :
 `scripts/tester-mail.ts` envoie un vrai gabarit pour relecture dans un client réel.
 
@@ -384,6 +505,12 @@ Links, Proofpoint) suivent les liens des mails pour les inspecter : un jeton à 
 par un simple `GET` le serait par un robot avant même que le parent ne clique, et celui-ci lirait
 « lien invalide » sans comprendre. `/api/auth/verifier` subsiste et redirige vers cette page, pour
 les mails déjà partis. Même raisonnement que pour le désabonnement ci-dessous.
+
+**Mise en pause** : lien signé HMAC (`lib/auth/pause.ts`), même modèle que le désabonnement, à deux
+différences près. Le préfixe du message signé est `pause:` et non `desabonnement:` — sans quoi un
+jeton vaudrait pour l'autre action, et les deux liens partent dans le même mail. Et **la semaine
+visée fait partie de la charge signée** : un lien d'un mail de la semaine dernière est rejeté au lieu
+de faire taire la semaine en cours, que le parent n'a jamais examinée.
 
 **Désabonnement** : lien signé HMAC (`lib/auth/desabonnement.ts`), sans ligne en base. La page
 `/desabonnement` confirme par un bouton au lieu d'agir au chargement — les passerelles de sécurité

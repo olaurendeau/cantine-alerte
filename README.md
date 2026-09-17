@@ -102,8 +102,9 @@ Choisissez une date dont la semaine cible n'est pas encore réservée pour voir 
 | `MAIL_PROVIDER` | `console` (défaut) ou `brevo`. |
 | `BREVO_API_KEY`, `MAIL_EXPEDITEUR` | Requis si `MAIL_PROVIDER=brevo`. |
 | `CANTINE_BDD`, `CANTINE_API_KEY`, `CANTINE_DB_ID`, `CANTINE_TYPE_ID`, `CANTINE_PORTAIL` | Identifient la collectivité. Valeurs par défaut : L'Argentière-la-Bessée. |
-| `CANTINE_PRESTATION` | Regex de la prestation surveillée (défaut `RepE|Repas enfant`). |
-| `CANTINE_EXCLUSIONS` | Dates à ignorer, `YYYY-MM-DD` séparées par des virgules. |
+| `CANTINE_PRESTATION` | Regex de la cantine (défaut `RepE|Repas enfant`). **Requise** : si rien ne correspond, le service lève. |
+| `CANTINE_PRESTATION_MATIN`, `CANTINE_PRESTATION_SOIR` | Regex du périscolaire (défauts `Gmat|Garderie matin`, `Gsoir|Garderie soir`). Absentes du portail = signalées, pas bloquantes. |
+| `CANTINE_EXCLUSIONS` | Dates à ignorer, `YYYY-MM-DD` séparées par des virgules. **Cantine seule** : une sortie scolaire supprime le repas, pas la garderie. |
 | `CANTINE_PAUSE_MS` | Pause entre deux familles dans le cron (défaut 3000). Le throttling du portail est par IP. |
 
 **Déployer pour une autre commune** : ouvrez la page de connexion de votre portail et relevez les
@@ -117,7 +118,7 @@ node scripts/verifier.ts --date 2026-09-08,2026-09-14   # simule des jours, affi
 node scripts/verifier.ts --dump 2>/dev/null | jq        # payload brut du portail
 node scripts/verifier.ts --verbose                      # trace chaque étape HTTP
 node scripts/cron.ts --date 2026-09-10                  # exécute un cycle de rappel
-node scripts/seed.ts --rappels 0,1,4                    # crée un compte de test
+node scripts/seed.ts --rappels 0,1,4 --matin 0,3        # crée un compte de test
 npm test                                                # tests unitaires
 ```
 
