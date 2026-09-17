@@ -72,6 +72,19 @@ export function pauseConfiguree(brut = process.env.CANTINE_PAUSE_MS): number {
 
 const PAUSE_ENTRE_COMPTES_MS = pauseConfiguree();
 
+/**
+ * Budget d'un cycle, sous le `maxDuration = 300` de la fonction Vercel.
+ *
+ * Sans lui, la plateforme coupe la fonction en plein vol : les familles de fin
+ * de liste perdent leur rappel du jour sans laisser la moindre trace. On
+ * s'arrete donc AVANT, en le disant — une famille non traitee reste une alerte
+ * potentiellement perdue, elle doit se voir dans le resume et les journaux.
+ *
+ * La marge couvre le pire cas d'une derniere famille engagee : budget de
+ * session de 45 s plus les reessais.
+ */
+const BUDGET_CYCLE_MS = 230_000;
+
 const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export type StatutParent =
@@ -108,6 +121,11 @@ export type ResultatCron = {
   semaineVisee: string;
   joursRestants: number;
   traites: ResultatParent[];
+  /**
+   * Familles jamais examinees, faute de temps. Zero est le cas normal ; tout
+   * autre chiffre signale que le cycle ne tient plus dans son budget.
+   */
+  nonTraites: number;
   /**
    * Duree du cycle et nombre de connexions au portail.
    *
@@ -191,13 +209,33 @@ export async function executerCron({
              OR cardinality(${rappels.joursMatin}) > 0
              OR cardinality(${rappels.joursSoir}) > 0)`,
       ),
-    );
+    )
+    // Les moins recemment verifiees d'abord. Sans ordre explicite, Postgres rend
+    // une liste stable en pratique : la meme famille se retrouverait en queue a
+    // chaque cycle, donc systematiquement sacrifiee quand le budget s'epuise —
+    // et le filet de 19 h la couperait au meme endroit. `verifie_le` etant remis
+    // a jour a chaque succes, une famille non traitee passe mecaniquement en
+    // tete au cycle suivant.
+    .orderBy(sql`${identifiantsPortail.verifieLe} ASC NULLS FIRST`);
 
   trace(`${dus.length} compte(s) candidat(s) aujourd'hui`);
 
   const traites: ResultatParent[] = [];
   let interroges = 0;
-  for (const parent of dus) {
+  let nonTraites = 0;
+  for (const [rang, parent] of dus.entries()) {
+    // On s'arrete net plutot que de se faire couper : le reste de la liste est
+    // compte et remonte, au lieu de disparaitre en silence.
+    if (Date.now() - commence > BUDGET_CYCLE_MS) {
+      nonTraites = dus.length - rang;
+      trace(
+        `BUDGET EPUISE apres ${Date.now() - commence} ms : ${nonTraites} compte(s) non ` +
+          "examine(s). Ils passeront en tete au prochain cycle, mais leur rappel du jour " +
+          "est perdu si celui-ci etait le dernier.",
+      );
+      break;
+    }
+
     const fenetres = fenetresPour({
       aujourdhui,
       exclusions,
@@ -267,6 +305,7 @@ export async function executerCron({
     traites,
     dureeMs: Date.now() - commence,
     interroges,
+    nonTraites,
   };
 }
 
