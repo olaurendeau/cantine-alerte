@@ -64,9 +64,14 @@ export const identifiantsPortail = pgTable("identifiants_portail", {
 });
 
 /**
- * Jours de rappel, en nombre de jours avant l'echeance. L'echeance etant
- * toujours un lundi : 0 = lundi (dernier jour), 1 = dimanche, 2 = samedi...
- * Au-dela de 6 on retomberait sur l'echeance precedente.
+ * Les reglages d'une famille : quand lui ecrire, et ce que l'on surveille.
+ *
+ * Deux referentiels de jours coexistent ici, et les confondre est le piege
+ * principal de cette table :
+ *   - `jours_avant` compte les jours AVANT l'echeance cantine, qui est toujours
+ *     un lundi. 0 = lundi (dernier jour), 1 = dimanche, ... 6 = mardi.
+ *   - `jours_sans_cantine` / `jours_matin` / `jours_soir` sont des JOURS DE
+ *     SEMAINE, 0 = lundi, comme `planning.jour_0` du portail.
  */
 export const rappels = pgTable(
   "rappels",
@@ -74,6 +79,14 @@ export const rappels = pgTable(
     parentId: uuid("parent_id")
       .primaryKey()
       .references(() => parents.id, { onDelete: "cascade" }),
+    /**
+     * Jours ou la famille veut des nouvelles, en J-n avant l'echeance.
+     *
+     * La liste vide est l'INTERRUPTEUR GENERAL : plus aucun mail, periscolaire
+     * compris. C'est ce que pose le lien "Ne plus recevoir de rappels" — sans
+     * quoi le periscolaire, qui ne depend pas des jours choisis, continuerait
+     * d'ecrire a une famille desabonnee et le lien mentirait.
+     */
     joursAvant: integer("jours_avant").array().notNull().default([1]),
     /**
      * Jours ou l'on n'ecrit PAS quand tout est deja reserve.
@@ -85,6 +98,30 @@ export const rappels = pgTable(
      * n'oblige pas a penser a l'activer.
      */
     joursSilencieux: integer("jours_silencieux").array().notNull().default([]),
+    /**
+     * Jours de semaine SANS cantine attendue. En negatif, meme raison que
+     * ci-dessus : le defaut — la liste vide — doit valoir le comportement sur,
+     * ici "alerter tous les jours".
+     */
+    joursSansCantine: integer("jours_sans_cantine").array().notNull().default([]),
+    /**
+     * Jours de semaine AVEC periscolaire attendu. En positif cette fois, parce
+     * que le comportement sur est l'inverse : on ne peut pas alerter sur un
+     * service que la famille n'utilise pas. La liste vide eteint la
+     * surveillance.
+     */
+    joursMatin: integer("jours_matin").array().notNull().default([]),
+    joursSoir: integer("jours_soir").array().notNull().default([]),
+    /**
+     * Semaine visee (lundi) pour laquelle le parent a dit "pas de cantine cette
+     * semaine". Le cron compare a la semaine du jour : quand l'echeance passe,
+     * la semaine visee change, la valeur ne correspond plus et la cantine
+     * reprend SEULE. Pas de purge a prevoir, et recliquer est idempotent.
+     *
+     * Ne couvre que la cantine : le periscolaire garde son horizon de deux
+     * jours, sur lequel une pause hebdomadaire n'aurait aucun sens.
+     */
+    pauseSemaine: date("pause_semaine"),
   },
   // Le cron selectionne les comptes du jour avec `jours_avant @> ARRAY[n]` :
   // sans index GIN c'est un parcours complet a chaque execution.
@@ -105,8 +142,15 @@ export const envois = pgTable(
       .references(() => parents.id, { onDelete: "cascade" }),
     semaineVisee: date("semaine_visee").notNull(),
     joursAvant: integer("jours_avant").notNull(),
-    /** "rappel" (des repas manquent) ou "confirmation" (tout est reserve). */
-    type: text("type").notNull().default("rappel"),
+    /**
+     * "rappel_cantine", "rappel_periscolaire" ou "confirmation".
+     *
+     * Le perimetre fait partie de la valeur : sans lui, un rappel de garderie
+     * pose a 16 h occuperait la ligne du jour et le filet de 19 h conclurait
+     * "deja notifie" si une reservation de cantine venait d'etre annulee.
+     * Aucun defaut : on l'ecrit toujours explicitement.
+     */
+    type: text("type").notNull(),
     envoyeLe: timestamp("envoye_le", { withTimezone: true }).notNull().defaultNow(),
   },
   // `type` fait partie de la cle : un rappel et une confirmation ne se
