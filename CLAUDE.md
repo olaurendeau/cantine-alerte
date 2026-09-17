@@ -329,6 +329,12 @@ Points de conception qui ont une raison d'être :
   pose **deux** lignes ; le mail expédié ne contient que les sections dont l'insertion a rendu une
   ligne, sinon on renverrait ce qui vient de partir. Le garde « pas de confirmation après un rappel »
   vaut pour **n'importe quel** rappel du jour, quel que soit son périmètre.
+  ⚠️ **La migration `0003` doit convertir les lignes historiques** (`UPDATE envois SET type =
+  'rappel_cantine' WHERE type = 'rappel'`), sinon elles n'entrent plus en collision et chaque
+  famille reçoit un doublon le jour du déploiement. Un cron de l'**ancienne** révision encore en vol
+  pendant la migration peut néanmoins réinsérer un `type = 'rappel'` après coup : fenêtre de quelques
+  minutes, une seule fois, et le résultat est un mail en trop — bénin selon l'asymétrie du service.
+  Drainer les crons avant de migrer l'élimine, si la question se repose un jour.
 - **La pause est cantine seule, et s'exprime en semaine visée.** `rappels.pause_semaine` stocke le
   lundi visé, pas une date de fin : quand l'échéance passe, la semaine visée change, la valeur ne
   correspond plus et la cantine reprend **seule**. Rien à purger, recliquer est idempotent. Elle
@@ -356,10 +362,19 @@ Points de conception qui ont une raison d'être :
   par statut de `/api/cron` et par les journaux Vercel.
 - **Une famille qui active le périscolaire est interrogée tous les jours**, contre ~2 jours sur 7
   auparavant. À 3 s de pause par famille dans une fonction plafonnée à 300 s, le service tient une
-  cinquantaine de comptes, et le dépassement serait **muet** : Vercel coupe la fonction et les
-  familles de fin de liste perdent leur rappel sans trace. D'où `dureeMs` et `interroges` dans la
-  réponse de `/api/cron`, et la trace par famille qui dit le temps écoulé — le plafond doit se voir
-  venir, pas se découvrir.
+  cinquantaine de comptes. Trois garde-fous, et aucun n'est décoratif :
+  - `BUDGET_CYCLE_MS` (230 s) **arrête le cycle avant que Vercel ne le coupe**. Se faire couper en
+    plein vol ferait disparaître le reste de la liste sans laisser la moindre trace ; s'arrêter
+    soi-même permet de compter ce qu'on n'a pas fait.
+  - ⚠️ **L'ordre de traitement est `verifie_le ASC NULLS FIRST`, et ce n'est pas cosmétique.** Sans
+    ordre explicite, Postgres rend une liste stable en pratique : la même famille se retrouverait en
+    queue à chaque cycle, donc **systématiquement** sacrifiée quand le budget s'épuise — et le filet
+    de 19 h la couperait au même endroit. `verifie_le` étant remis à jour à chaque succès, une
+    famille non traitée repasse mécaniquement en tête. On transforme ainsi « les mêmes dix familles
+    ne sont jamais alertées » en « tout le monde finit par l'être ».
+  - `dureeMs`, `interroges` et surtout **`nonTraites`** remontent dans `/api/cron`. Toute valeur non
+    nulle de `nonTraites` est une alerte d'exploitation : des familles n'ont pas été examinées, leur
+    rappel du jour peut être perdu.
 - **Le throttling du portail s'applique par adresse IP**, pas par compte. Constaté en conditions
   réelles : trois connexions ratées d'affilée ont fait retourner un `429` au compte suivant, pourtant
   valide. D'où (a) la pause `CANTINE_PAUSE_MS` entre familles dans la boucle du cron, (b)
