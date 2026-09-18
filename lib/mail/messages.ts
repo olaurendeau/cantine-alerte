@@ -1,6 +1,6 @@
-import { formaterJour, formaterJourCourt } from "../portail/dates.ts";
+import { formaterJour, formaterJourCourt, joursRestants as ecartJours } from "../portail/dates.ts";
 import { urlDepot } from "../url-publique.ts";
-import type { Cible } from "../portail/types.ts";
+import type { Cible, CleSurveillance } from "../portail/types.ts";
 import {
   bouton,
   encart,
@@ -28,6 +28,8 @@ export type Liens = {
   reservation: string;
   reglages: string;
   desabonnement?: string;
+  /** Met la cantine en silence jusqu'a la prochaine echeance. Cf. lib/auth/pause.ts. */
+  pause?: string;
 };
 
 const pied = (liens: Liens) =>
@@ -56,11 +58,17 @@ const EMOJI_MANQUE = "⚠️";
 const EMOJI_PRESSE = "🚨";
 
 /**
- * Seuil du gyrophare : deux jours ou moins avant l'echeance.
+ * Seuil du gyrophare pour la CANTINE : deux jours ou moins avant l'echeance.
  *
  * Volontairement plus large que `urgent`, qui vaut J-0 seul parce qu'il
  * commande des formulations vraies ce jour-la uniquement (« ce soir avant
  * minuit »). L'emoji, lui, n'affirme rien de tel : il peut prevenir plus tot.
+ *
+ * Ce seuil ne se transpose PAS tel quel au periscolaire. Il a ete calibre sur
+ * un cycle de sept jours, ou « il reste deux jours » est vraiment la derniere
+ * ligne droite ; sur un cycle de deux jours il couvrirait tout le cycle et ne
+ * porterait plus aucune information. On transpose donc l'intention, pas la
+ * valeur : gyrophare au dernier jour utile seulement.
  */
 const SEUIL_PRESSE = 2;
 
@@ -77,74 +85,289 @@ function grouperParEnfant(manquants: Cible[]): GroupeJours[] {
   }));
 }
 
-export function mailRappel({
-  manquants,
-  semaine,
-  echeance,
-  joursRestants,
-  urgent,
-  liens,
-}: {
+const MOMENTS: Record<string, string> = { matin: "matin", soir: "soir" };
+
+/**
+ * Comme `grouperParEnfant`, mais un jour de periscolaire peut manquer le matin,
+ * le soir, ou les deux : le moment doit accompagner le jour, sinon le parent ne
+ * sait pas laquelle des deux inscriptions poser.
+ */
+function grouperPeriscolaire(manquants: Cible[]): GroupeJours[] {
+  const parEnfant = new Map<string, Map<number, Set<CleSurveillance>>>();
+  for (const m of manquants) {
+    if (!parEnfant.has(m.enfant)) parEnfant.set(m.enfant, new Map());
+    const jours = parEnfant.get(m.enfant)!;
+    const t = m.date.getTime();
+    if (!jours.has(t)) jours.set(t, new Set());
+    jours.get(t)!.add(m.cle);
+  }
+  return [...parEnfant].map(([enfant, jours]) => ({
+    enfant,
+    jours: [...jours]
+      .sort((a, b) => a[0] - b[0])
+      .map(([t, cles]) => {
+        const moments = ["matin", "soir"]
+          .filter((c) => cles.has(c as CleSurveillance))
+          .map((c) => MOMENTS[c]);
+        return `${formaterJourCourt(new Date(t))} (${moments.join(" et ")})`;
+      }),
+  }));
+}
+
+const pluriel = (n: number) => (n > 1 ? "s" : "");
+
+/** La cantine, quand elle a ete regardee aujourd'hui. */
+export type SectionCantine = {
   manquants: Cible[];
   semaine: Date;
   echeance: Date;
   joursRestants: number;
-  urgent: boolean;
+};
+
+/**
+ * Le rappel du jour : un seul message, qui couvre les deux perimetres.
+ *
+ * Les sections gardent un ordre FIXE cantine puis periscolaire. L'encart de
+ * tete et l'objet portent deja l'echeance la plus pressante, donc l'ordre du
+ * corps ne joue plus sur l'urgence — seulement sur l'habitude de lecture, et un
+ * message recurrent dont la structure bouge se lit moins vite.
+ */
+export function mailRappel({
+  cantine,
+  periscolaire = [],
+  aujourdhui,
+  liens,
+}: {
+  cantine: SectionCantine | null;
+  periscolaire?: Cible[];
+  /** Sert a dater les echeances du periscolaire, qui se comptent depuis aujourd'hui. */
+  aujourdhui: Date;
   liens: Liens;
 }): Mail {
-  const nb = manquants.length;
-  const repas = `${nb} repas non réservé${nb > 1 ? "s" : ""}`;
-  const emoji = joursRestants <= SEUIL_PRESSE ? EMOJI_PRESSE : EMOJI_MANQUE;
-  const delai = urgent
-    ? "À réserver ce soir avant minuit"
-    : `À réserver avant ${formaterJour(echeance)}, minuit` +
-      (joursRestants > 0 ? ` — dans ${joursRestants} jour${joursRestants > 1 ? "s" : ""}` : "");
+  // Le perimetre cantine peut avoir ete regarde sans rien manquer — c'est le cas
+  // d'un rappel declenche par le seul periscolaire. On le ramene a `null` ici
+  // plutot que d'en tenir compte dans chaque calcul en aval, sans quoi le mail
+  // afficherait un titre « Cantine » suivi d'une liste vide.
+  const sectionC = cantine && cantine.manquants.length ? cantine : null;
+  const nbCantine = sectionC?.manquants.length ?? 0;
+  const nbPerisco = periscolaire.length;
+
+  // Nombre de jours avant la fermeture, meme unite pour les deux perimetres :
+  // 0 = ce soir a minuit. Pour le periscolaire, un jour D ferme au minuit qui
+  // l'ouvre, donc l'ecart de dates moins un.
+  const ecartsPerisco = periscolaire.map((c) => ecartJours(aujourdhui, c.date) - 1);
+  const presseCantine = sectionC?.joursRestants ?? Number.POSITIVE_INFINITY;
+  const pressePerisco = ecartsPerisco.length ? Math.min(...ecartsPerisco) : Number.POSITIVE_INFINITY;
+
+  // Ex aequo : la cantine passe devant, c'est le coeur du service.
+  const cantineDabord = presseCantine <= pressePerisco;
+  const presse = Math.min(presseCantine, pressePerisco);
+
+  // « Ce soir avant minuit » est vrai des que le perimetre le plus pressant
+  // ferme cette nuit, cantine comme periscolaire.
+  const urgent = presse === 0;
+  // Gyrophare : seuil large pour la cantine, dernier jour seul pour le
+  // periscolaire, cf. SEUIL_PRESSE.
+  const gyrophare = presseCantine <= SEUIL_PRESSE || pressePerisco === 0;
+  const emoji = gyrophare ? EMOJI_PRESSE : EMOJI_MANQUE;
+
+  const delaiCantine = (c: SectionCantine) =>
+    c.joursRestants === 0
+      ? "À réserver ce soir avant minuit"
+      : `À réserver avant ${formaterJour(c.echeance)}, minuit` +
+        ` — dans ${c.joursRestants} jour${pluriel(c.joursRestants)}`;
+  const delaiPerisco = (jours: number) =>
+    jours === 0 ? "À réserver ce soir avant minuit" : "À réserver demain avant minuit";
+
+  const delai = cantineDabord && sectionC ? delaiCantine(sectionC) : delaiPerisco(pressePerisco);
+
+  const phraseCantine = `${nbCantine} repas non réservé${pluriel(nbCantine)}`;
+  const phrasePerisco = `${nbPerisco} périscolaire${pluriel(nbPerisco)} non réservé${pluriel(nbPerisco)}`;
+
+  const objet = construireObjet({
+    emoji,
+    urgent,
+    cantine: sectionC,
+    cantineDabord,
+    nbCantine,
+    nbPerisco,
+    phraseCantine,
+    phrasePerisco,
+    periscolaire,
+  });
+
+  // Chaque section porte sa propre echeance des lors qu'elles sont deux :
+  // l'encart de tete ne parle que de la plus pressante, et sans ce rappel le
+  // lecteur appliquerait « ce soir avant minuit » a la cantine, qui a cinq
+  // jours devant elle. Seule, la cantine garde sa formulation d'origine —
+  // l'encart la porte deja, la repeter serait du bruit.
+  const deuxSections = Boolean(sectionC) && nbPerisco > 0;
+  const sectionCantine = sectionC
+    ? [
+        paragraphe(
+          deuxSections
+            ? `Cantine — semaine du ${formaterJour(sectionC.semaine)}. ${delaiCantine(sectionC)}.`
+            : `Semaine du ${formaterJour(sectionC.semaine)}.`,
+          { doux: true },
+        ),
+        joursParEnfant(grouperParEnfant(sectionC.manquants)),
+      ]
+    : [];
+  const sectionPerisco = nbPerisco
+    ? [
+        paragraphe("Périscolaire — à réserver la veille avant minuit.", { doux: true }),
+        joursParEnfant(grouperPeriscolaire(periscolaire)),
+      ]
+    : [];
 
   return rendreMail({
-    // L'aperçu mobile tronque : l'information utile passe devant le nom du
-    // service, qui est de toute façon visible sur la ligne de l'expéditeur.
-    objet: urgent
-      ? `${emoji} Dernier jour — ${repas} pour la semaine du ${formaterJour(semaine)}`
-      : `${emoji} ${repas} · semaine du ${formaterJour(semaine)}`,
+    objet,
     preheader: `${delai}.`,
     blocs: [
       encart({ texte: delai, ton: urgent ? "urgent" : "info" }),
-      titre(repas),
-      paragraphe(`Semaine du ${formaterJour(semaine)}.`, { doux: true }),
+      titre(`${phrasesCumulees(nbCantine, nbPerisco, phraseCantine, phrasePerisco, cantineDabord)}`),
       bouton({ libelle: "Réserver maintenant", url: liens.reservation }),
       separateur(),
-      joursParEnfant(grouperParEnfant(manquants)),
+      ...sectionCantine,
+      ...(sectionCantine.length && sectionPerisco.length ? [separateur()] : []),
+      ...sectionPerisco,
+      // Le bouton de pause ne vaut que pour la cantine : l'afficher sur un
+      // message qui ne parle que de garderie promettrait un silence qu'il ne
+      // tient pas.
+      ...(nbCantine && liens.pause
+        ? [
+            separateur(),
+            paragraphe(
+              "Vos enfants ne mangent pas à la cantine cette semaine ? Coupez les rappels " +
+                "jusqu'à la prochaine échéance. Les alertes de périscolaire continueront.",
+              { doux: true },
+            ),
+            bouton({
+              libelle: "Pas de cantine cette semaine",
+              url: liens.pause,
+              ton: "secondaire",
+            }),
+          ]
+        : []),
     ],
     pied: pied(liens),
   });
 }
 
+/** « 3 repas » / « 2 périscolaires et 3 repas », avec l'accord sur le total. */
+function phrasesCumulees(
+  nbCantine: number,
+  nbPerisco: number,
+  phraseCantine: string,
+  phrasePerisco: string,
+  cantineDabord: boolean,
+): string {
+  if (!nbPerisco) return phraseCantine;
+  if (!nbCantine) return phrasePerisco;
+  const total = nbCantine + nbPerisco;
+  const [a, b] = cantineDabord
+    ? [`${nbCantine} repas`, `${nbPerisco} périscolaire${pluriel(nbPerisco)}`]
+    : [`${nbPerisco} périscolaire${pluriel(nbPerisco)}`, `${nbCantine} repas`];
+  return `${a} et ${b} non réservé${pluriel(total)}`;
+}
+
+/**
+ * L'apercu mobile tronque : l'objet epouse le perimetre le plus pressant et
+ * relegue l'autre en suffixe. Un objet a parts egales rendrait « Dernier jour »
+ * litteralement faux pour l'un des deux.
+ */
+function construireObjet({
+  emoji,
+  urgent,
+  cantine,
+  cantineDabord,
+  nbCantine,
+  nbPerisco,
+  phraseCantine,
+  phrasePerisco,
+  periscolaire,
+}: {
+  emoji: string;
+  urgent: boolean;
+  cantine: SectionCantine | null;
+  cantineDabord: boolean;
+  nbCantine: number;
+  nbPerisco: number;
+  phraseCantine: string;
+  phrasePerisco: string;
+  periscolaire: Cible[];
+}): string {
+  // Cantine seule : les formulations d'origine, au caractere pres. Une famille
+  // qui n'utilise pas le periscolaire ne doit voir aucun changement.
+  if (cantine && !nbPerisco) {
+    return urgent
+      ? `${emoji} Dernier jour — ${phraseCantine} pour la semaine du ${formaterJour(cantine.semaine)}`
+      : `${emoji} ${phraseCantine} · semaine du ${formaterJour(cantine.semaine)}`;
+  }
+
+  if (!cantine || !nbCantine) {
+    const jours = [...new Set(periscolaire.map((c) => formaterJourCourt(c.date)))].join(" et ");
+    return urgent
+      ? `${emoji} Dernier jour — ${phrasePerisco}`
+      : `${emoji} ${phrasePerisco} · ${jours}`;
+  }
+
+  const principal = cantineDabord ? phraseCantine : phrasePerisco;
+  const suffixe = cantineDabord
+    ? ` · et ${nbPerisco} périscolaire${pluriel(nbPerisco)}`
+    : ` · et ${nbCantine} repas`;
+  return urgent
+    ? `${emoji} Dernier jour — ${principal}${suffixe}`
+    : `${emoji} ${principal}${suffixe}`;
+}
+
+/**
+ * La confirmation : « rien a faire », sur le perimetre REELLEMENT regarde.
+ *
+ * Deux lignes distinctes plutot qu'une phrase globale : la cantine se confirme
+ * sur une semaine, le periscolaire sur deux jours. Un « tout est reserve »
+ * affirmerait une couverture du periscolaire sur des jours qu'on n'a jamais
+ * regardes.
+ */
 export function mailConfirmation({
-  semaine,
-  echeance,
-  reserves,
+  cantine,
+  periscolaire = null,
   liens,
 }: {
-  semaine: Date;
-  echeance: Date;
-  reserves: number;
+  cantine: { semaine: Date; echeance: Date; reserves: number } | null;
+  /** Les jours de periscolaire regardes aujourd'hui, s'il y en avait. */
+  periscolaire?: { jours: Date[] } | null;
   liens: Liens;
 }): Mail {
+  const joursPerisco = periscolaire?.jours ?? [];
+  const listePerisco = joursPerisco.map(formaterJourCourt).join(" et ");
+
   return rendreMail({
-    objet: `${EMOJI_OK} Tout est réservé · semaine du ${formaterJour(semaine)}`,
-    preheader: "Rien à faire, la semaine est couverte.",
+    objet: cantine
+      ? `${EMOJI_OK} Tout est réservé · semaine du ${formaterJour(cantine.semaine)}`
+      : `${EMOJI_OK} Rien à réserver · ${listePerisco}`,
+    preheader: cantine
+      ? "Rien à faire, la semaine est couverte."
+      : "Rien à faire pour le périscolaire.",
     blocs: [
       encart({ texte: "Rien à faire, tout est réservé", ton: "succes" }),
-      titre(`Semaine du ${formaterJour(semaine)}`),
+      titre(cantine ? `Semaine du ${formaterJour(cantine.semaine)}` : "Rien à réserver"),
       // Present, et non passe : `prochaineEcheance()` rend le prochain lundi,
       // aujourd'hui inclus. L'echeance est donc toujours a venir quand ce
       // message part — a J-0 elle tombe le soir meme. L'annoncer au passe
       // laisse croire que la semaine est close et qu'il n'y a plus rien a
       // corriger, alors qu'une annulation reste possible jusqu'a minuit.
-      paragraphe(
-        `Les ${reserves} repas de la semaine sont réservés. La date limite est ` +
-          `${formaterJour(echeance)} à minuit.`,
-      ),
+      ...(cantine
+        ? [
+            paragraphe(
+              `Les ${cantine.reserves} repas de la semaine sont réservés. La date limite est ` +
+                `${formaterJour(cantine.echeance)} à minuit.`,
+            ),
+          ]
+        : []),
+      ...(joursPerisco.length
+        ? [paragraphe(`Périscolaire : rien à réserver ${listePerisco}.`)]
+        : []),
       paragraphe(
         "Ce message vous confirme que la surveillance fonctionne. Vous pouvez le " +
           "désactiver jour par jour dans vos réglages.",

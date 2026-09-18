@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   aujourdhuiParis,
+  fenetreVeille,
   iso,
+  jourSemaine,
+  libelleJourAvant,
   joursRestants,
   jourDepuisIso,
   lundiDe,
@@ -66,4 +69,45 @@ test("lundiDe ramene au lundi de la semaine", () => {
   for (const jour of ["2026-09-21", "2026-09-23", "2026-09-27"]) {
     assert.equal(iso(lundiDe(jourDepuisIso(jour))), "2026-09-21", `depuis ${jour}`);
   }
+});
+
+test("jourSemaine compte a partir du lundi, comme le portail", () => {
+  // 0 = lundi, pour coller a `planning.jour_0` du portail et a `lundiDe`.
+  // getUTCDay() compte a partir du dimanche : reprendre sa valeur telle quelle
+  // decalerait tous les jours attendus d'un cran, et « pas de cantine le mardi »
+  // ecarterait le lundi.
+  const cas: [string, number][] = [
+    ["2026-09-07", 0], // lundi
+    ["2026-09-08", 1], // mardi
+    ["2026-09-11", 4], // vendredi
+    ["2026-09-12", 5], // samedi
+    ["2026-09-13", 6], // dimanche
+  ];
+  for (const [jour, attendu] of cas) {
+    assert.equal(jourSemaine(jourDepuisIso(jour)), attendu, `depuis ${jour}`);
+  }
+});
+
+test("la fenetre du periscolaire couvre les deux jours encore rattrapables", () => {
+  // La reservation d'un jour D ferme au minuit qui OUVRE D : le dernier jour
+  // utile est D-1, l'avant-dernier D-2. Vu d'aujourd'hui, ce sont donc J+1 et
+  // J+2 — jamais aujourd'hui, dont l'echeance est passee cette nuit.
+  const f = fenetreVeille(jourDepuisIso("2026-09-09"));
+  assert.equal(iso(f.debut), "2026-09-10");
+  assert.equal(iso(f.fin), "2026-09-11");
+
+  // Le lundi est couvert par les passages du samedi (J+2) et du dimanche (J+1) :
+  // le cron tourne tous les jours, week-end compris.
+  assert.equal(iso(fenetreVeille(jourDepuisIso("2026-09-12")).fin), "2026-09-14");
+  assert.equal(iso(fenetreVeille(jourDepuisIso("2026-09-13")).debut), "2026-09-14");
+});
+
+test("le suffixe « dernier jour » ne s'affiche que si la cantine est surveillee", () => {
+  // Une famille qui ne suit que la garderie lirait sinon « lundi (dernier
+  // jour) » alors qu'aucune echeance ne tombe ce lundi-la pour elle.
+  assert.equal(libelleJourAvant(0), "lundi (dernier jour pour la cantine)");
+  assert.equal(libelleJourAvant(0, { avecCantine: false }), "lundi");
+  // Les autres jours ne portent pas de suffixe, dans les deux cas.
+  assert.equal(libelleJourAvant(3), "vendredi");
+  assert.equal(libelleJourAvant(3, { avecCantine: false }), "vendredi");
 });

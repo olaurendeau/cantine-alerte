@@ -1,16 +1,27 @@
 import { redirect } from "next/navigation";
 import { sessionCourante } from "../../lib/auth/session.ts";
-import { JOURS_AVANT_POSSIBLES, aujourdhuiParis, iso } from "../../lib/portail/dates.ts";
-import { chargerReglages } from "../../lib/service/reglages.ts";
+import {
+  JOURS_AVANT_POSSIBLES,
+  JOURS_SEMAINE_UI,
+  aujourdhuiParis,
+  formaterJour,
+  iso,
+  jourDepuisIso,
+} from "../../lib/portail/dates.ts";
+import { chargerReglages, semaineAMettreEnPause } from "../../lib/service/reglages.ts";
 import { estAdmin } from "../../lib/service/verification.ts";
 import {
   actionDeconnexion,
   actionDestinataires,
   actionIdentifiants,
+  actionPause,
   actionRappels,
+  actionReprendre,
+  actionSurveillance,
   actionTesterMail,
   actionVerifier,
 } from "./actions.ts";
+import { GrilleSurveillance } from "./grille-surveillance.tsx";
 import { LignesRappel } from "./lignes-rappel.tsx";
 
 export default async function Reglages({
@@ -31,6 +42,11 @@ export default async function Reglages({
   const adressesTest = reglages.destinataires.length
     ? reglages.destinataires
     : [reglages.email];
+
+  // La semaine que le bouton de pause ferait taire, et celle deja mise en
+  // silence le cas echeant : les comparer dit si la pause court encore.
+  const semaineCourante = semaineAMettreEnPause(aujourdhuiParis());
+  const enPause = reglages.pauseSemaine === semaineCourante;
 
   return (
     <>
@@ -112,10 +128,35 @@ export default async function Reglages({
       </section>
 
       <section className="carte">
-        <h2>Quand vous rappeler</h2>
+        <h2>Ce que l&apos;on surveille</h2>
         <p className="doux">
-          Les réservations ferment le lundi à minuit pour la semaine suivante. Choisissez les
-          jours où vous voulez être prévenu s&apos;il manque des repas.
+          Cochez les jours où vos enfants doivent être inscrits.{" "}
+          <strong>Cantine</strong> : tout est coché par défaut — décochez les jours où ils ne
+          mangent jamais à la cantine, vous ne serez plus relancé pour ces jours-là.
+        </p>
+        <p className="doux">
+          <strong>Périscolaire du matin et du soir</strong> : rien n&apos;est coché par défaut. Ces
+          inscriptions se réservent <strong>jusqu&apos;à la veille à minuit</strong> ; si vous
+          cochez un jour, vous serez prévenu l&apos;avant-veille puis la veille en cas d&apos;oubli.
+        </p>
+        <form action={actionSurveillance}>
+          <GrilleSurveillance
+            joursPossibles={JOURS_SEMAINE_UI}
+            cantine={reglages.joursCantine}
+            matin={reglages.joursMatin}
+            soir={reglages.joursSoir}
+          />
+          <button type="submit">Enregistrer la surveillance</button>
+        </form>
+      </section>
+
+      <section className="carte">
+        <h2>Quand vous donner des nouvelles</h2>
+        <p className="doux">
+          Les réservations de cantine ferment le lundi à minuit pour la semaine suivante.
+          Choisissez les jours où vous voulez avoir de nos nouvelles. Une alerte de{" "}
+          <strong>périscolaire</strong>, elle, part dès qu&apos;il manque une inscription à deux
+          jours ou moins : elle ne peut pas attendre la prochaine date choisie.
         </p>
         <p className="doux">
           Par défaut vous recevez aussi un mot les jours où <strong>tout est déjà réservé</strong> :
@@ -137,12 +178,42 @@ export default async function Reglages({
                   joursPossibles={JOURS_AVANT_POSSIBLES}
                   joursAvant={reglages.joursAvant}
                   joursSilencieux={reglages.joursSilencieux}
+                  avecCantine={reglages.joursCantine.length > 0}
                 />
               </tbody>
             </table>
           </div>
           <button type="submit">Enregistrer les rappels</button>
         </form>
+      </section>
+
+      <section className="carte">
+        <h2>Mettre la cantine en pause</h2>
+        {enPause ? (
+          <>
+            <div className="message succes">
+              Rappels de cantine suspendus pour la semaine du{" "}
+              {formaterJour(jourDepuisIso(semaineCourante))}. Les alertes de périscolaire
+              continuent.
+            </div>
+            <form action={actionReprendre}>
+              <button type="submit">Reprendre les rappels de cantine</button>
+            </form>
+          </>
+        ) : (
+          <>
+            <p className="doux">
+              Vos enfants ne mangent pas à la cantine cette semaine ? Coupez les rappels jusqu&apos;à
+              la prochaine échéance — ils reprendront seuls ensuite. Les alertes de périscolaire,
+              qui se jouent sur deux jours, continueront.
+            </p>
+            <form action={actionPause}>
+              <button type="submit" className="secondaire">
+                Pas de cantine la semaine du {formaterJour(jourDepuisIso(semaineCourante))}
+              </button>
+            </form>
+          </>
+        )}
       </section>
 
       <section className="carte">

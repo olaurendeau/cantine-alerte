@@ -22,6 +22,10 @@ export default function Confidentialite() {
           <li>Les adresses destinataires des rappels (souvent les deux parents).</li>
           <li>Votre identifiant et votre mot de passe du portail de la cantine.</li>
           <li>Les jours ou vous souhaitez etre rappele.</li>
+          <li>
+            Les jours ou vous attendez une cantine ou un periscolaire, et le cas echeant la
+            semaine que vous avez mise en pause.
+          </li>
           <li>La date des dernieres verifications et des rappels envoyes.</li>
         </ul>
         <p>

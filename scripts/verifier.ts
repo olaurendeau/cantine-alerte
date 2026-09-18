@@ -14,10 +14,12 @@
 
 import { readFileSync } from "node:fs";
 import {
+  REGLAGES_TOUT,
   ajouter,
   analyser,
   aujourdhuiParis,
   configDepuisEnv,
+  fenetresPour,
   getPrestations,
   iso,
   joursRestants,
@@ -109,13 +111,23 @@ async function main() {
       restants: joursRestants(aujourdhui, echeance),
       debut,
       fin: ajouter(debut, opts.semaines * 7 - 1),
+      // Le CLI ne connait aucune famille : il surveille TOUT, tous les jours,
+      // sans exclusion. Un outil de diagnostic montre l'etat du portail, il ne
+      // simule pas une preference — et c'est ce qui en fait le moyen de voir si
+      // la garderie de J+1 revient bien reservable.
+      fenetres: fenetresPour({
+        aujourdhui,
+        reglages: REGLAGES_TOUT,
+        semaines: opts.semaines,
+      }),
     };
   });
 
   // Une seule requete couvrant l'union des fenetres : simuler plusieurs dates
   // ne doit pas multiplier les allers-retours au portail.
-  const debutGlobal = scenarios.reduce((a, s) => (s.debut < a ? s.debut : a), scenarios[0].debut);
-  const finGlobale = scenarios.reduce((a, s) => (s.fin > a ? s.fin : a), scenarios[0].fin);
+  const toutes = scenarios.flatMap((s) => s.fenetres);
+  const debutGlobal = toutes.reduce((a, f) => (f.debut < a ? f.debut : a), toutes[0].debut);
+  const finGlobale = toutes.reduce((a, f) => (f.fin > a ? f.fin : a), toutes[0].fin);
 
   const session = nouvelleSession(trace);
   const bearer = await login(cfg, session, trace);
@@ -124,7 +136,7 @@ async function main() {
   if (opts.dump) {
     const s = scenarios[0];
     console.log(JSON.stringify(payload, null, 2));
-    console.error(`\n${rapportStructure(analyser(payload, cfg, s.debut, s.fin))}`);
+    console.error(`\n${rapportStructure(analyser(payload, cfg, s.fenetres))}`);
     return;
   }
 
@@ -133,7 +145,7 @@ async function main() {
       `${i ? "\n" : ""}Aujourd'hui ${iso(s.aujourdhui)} | echeance ${iso(s.echeance)} minuit ` +
         `(J-${s.restants}) | semaine visee ${iso(s.debut)}`,
     );
-    const analyse = analyser(payload, cfg, s.debut, s.fin);
+    const analyse = analyser(payload, cfg, s.fenetres);
     if (opts.verbose) console.error(rapportStructure(analyse));
 
     // Avant tout raccourci : un etat non repertorie doit se voir meme sur une
@@ -143,6 +155,20 @@ async function main() {
       console.error(
         `Attention : etat(s) non repertorie(s) ${analyse.inconnus.join(", ")}, traite(s) comme ` +
           "non reserve(s). A classer dans ETATS_RESERVES ou ETATS_NON_RESERVES.",
+      );
+    }
+    if (analyse.absentes.length) {
+      console.error(
+        `Attention : aucune prestation ne correspond a ${analyse.absentes.join(", ")} sur ce ` +
+          "portail. Ajustez CANTINE_PRESTATION_MATIN / CANTINE_PRESTATION_SOIR.",
+      );
+    }
+    // Le signal qui rattrape une regle de delai erronee : on interroge des
+    // jours dont l'echeance est deja passee, l'alerte arriverait trop tard.
+    if (analyse.fenetresDepassees.length) {
+      console.error(
+        `ATTENTION : fenetre trop tardive pour ${analyse.fenetresDepassees.join(", ")} — des ` +
+          "pointages interroges ont deja depasse leur echeance. La regle de delai est a revoir.",
       );
     }
     // Ni repas reserve, ni repas a reserver. Compter les pointages serait faux :
@@ -166,14 +192,17 @@ async function main() {
       continue;
     }
     for (const m of analyse.manquants) {
-      console.log(`A reserver : ${iso(m.date)} ${m.enfant} (${m.prestation})`);
+      console.log(`A reserver : ${iso(m.date)} ${m.enfant} (${m.prestation}) [${m.cle}]`);
     }
     const mail = mailRappel({
-      manquants: analyse.manquants,
-      semaine: s.debut,
-      echeance: s.echeance,
-      joursRestants: s.restants,
-      urgent: s.restants === 0,
+      aujourdhui: s.aujourdhui,
+      cantine: {
+        manquants: analyse.manquants.filter((m) => m.cle === "cantine"),
+        semaine: s.debut,
+        echeance: s.echeance,
+        joursRestants: s.restants,
+      },
+      periscolaire: analyse.manquants.filter((m) => m.cle !== "cantine"),
       liens: {
         reservation: urlPortail(cfg),
         reglages: `${process.env.APP_URL ?? "http://localhost:3000"}/reglages`,

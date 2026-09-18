@@ -56,9 +56,13 @@ function dateSimulee(requete: Request): Date | undefined {
 function resume(resultat: ResultatCron) {
   const parStatut: Record<string, number> = {};
   const inconnus = new Set<string>();
+  const absentes = new Set<string>();
+  const depassees = new Set<string>();
   for (const t of resultat.traites) {
     parStatut[t.statut] = (parStatut[t.statut] ?? 0) + 1;
     for (const code of t.inconnus ?? []) inconnus.add(code);
+    for (const cle of t.absentes ?? []) absentes.add(cle);
+    for (const cle of t.depassees ?? []) depassees.add(cle);
   }
   return {
     aujourdhui: resultat.aujourdhui,
@@ -66,10 +70,24 @@ function resume(resultat: ResultatCron) {
     semaineVisee: resultat.semaineVisee,
     joursRestants: resultat.joursRestants,
     total: resultat.traites.length,
+    // Le plafond de 300 s se rapproche des qu'une famille active le
+    // periscolaire, puisqu'elle est alors interrogee tous les jours. Ces deux
+    // chiffres le rendent observable avant qu'il ne morde.
+    interroges: resultat.interroges,
+    dureeMs: resultat.dureeMs,
     parStatut,
     // Un code d'etat inconnu du portail doit sauter aux yeux : c'est le seul
     // signal annoncant qu'une regle de classement est a completer.
     ...(inconnus.size ? { etatsNonRepertories: [...inconnus] } : {}),
+    // Une surveillance demandee mais absente du portail ne produira jamais
+    // d'alerte : le silence doit se voir.
+    ...(absentes.size ? { surveillancesAbsentes: [...absentes] } : {}),
+    // Signature d'une regle de delai erronee : on interroge des jours dont
+    // l'echeance est deja passee, l'alerte arriverait trop tard.
+    ...(depassees.size ? { fenetresDepassees: [...depassees] } : {}),
+    // Toute valeur non nulle est une alerte d'exploitation : des familles n'ont
+    // pas ete examinees du tout, leur rappel du jour peut etre perdu.
+    ...(resultat.nonTraites ? { nonTraites: resultat.nonTraites } : {}),
   };
 }
 

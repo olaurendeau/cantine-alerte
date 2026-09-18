@@ -44,6 +44,13 @@ const joursAvant = lireJours(arg("rappels", "1"));
 // Jours ou l'on n'ecrit pas quand tout est deja reserve. Vide par defaut :
 // la confirmation est le comportement normal.
 const joursSilencieux = lireJours(arg("silencieux", ""));
+// Jours de SEMAINE (0 = lundi), a ne pas confondre avec les J-n ci-dessus.
+// La cantine se stocke en negatif, le periscolaire en positif : de chaque cote,
+// la liste vide vaut le comportement sur.
+const joursSansCantine = lireJours(arg("sans-cantine", ""));
+const joursMatin = lireJours(arg("matin", ""));
+const joursSoir = lireJours(arg("soir", ""));
+const pauseSemaine = arg("pause", "") || null;
 const adresses = arg("destinataires", email)
   .split(",")
   .map((s) => s.trim())
@@ -84,10 +91,18 @@ await db
     },
   });
 
+const reglages = {
+  joursAvant,
+  joursSilencieux,
+  joursSansCantine,
+  joursMatin,
+  joursSoir,
+  pauseSemaine,
+};
 await db
   .insert(rappels)
-  .values({ parentId: parent.id, joursAvant, joursSilencieux })
-  .onConflictDoUpdate({ target: rappels.parentId, set: { joursAvant, joursSilencieux } });
+  .values({ parentId: parent.id, ...reglages })
+  .onConflictDoUpdate({ target: rappels.parentId, set: reglages });
 
 await db.delete(destinataires).where(eq(destinataires.parentId, parent.id));
 await db.insert(destinataires).values(adresses.map((a) => ({ parentId: parent.id, email: a })));
@@ -98,4 +113,7 @@ console.log(`  rappels a J-  : ${joursAvant.join(", ")}`);
 console.log(
   `  confirmations : ${joursAvant.filter((n) => !joursSilencieux.includes(n)).join(", ") || "aucune"}`,
 );
+console.log(`  sans cantine  : ${joursSansCantine.join(", ") || "aucun jour ecarte"}`);
+console.log(`  periscolaire  : matin ${joursMatin.join(",") || "-"} / soir ${joursSoir.join(",") || "-"}`);
+if (pauseSemaine) console.log(`  pause cantine : semaine du ${pauseSemaine}`);
 process.exit(0);

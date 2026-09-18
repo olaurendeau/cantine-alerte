@@ -4,11 +4,16 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { fermerSession, sessionCourante } from "../../lib/auth/session.ts";
 import { jourDepuisIso } from "../../lib/portail/dates.ts";
+import { aujourdhuiParis } from "../../lib/portail/dates.ts";
 import {
   enregistrerDestinataires,
   enregistrerIdentifiants,
   enregistrerRappels,
+  enregistrerSurveillance,
   envoyerMailTest,
+  mettreEnPause,
+  reprendreAlertes,
+  semaineAMettreEnPause,
   verifierMaintenant,
 } from "../../lib/service/reglages.ts";
 
@@ -68,6 +73,41 @@ export async function actionRappels(formData: FormData) {
   });
 }
 
+export async function actionSurveillance(formData: FormData) {
+  const session = await exigerSession();
+  const lire = (nom: string) => formData.getAll(nom).map((v) => Number(v));
+  const cantine = lire("cantine");
+  const matin = lire("matin");
+  const soir = lire("soir");
+  await enregistrerSurveillance(session.parentId, { cantine, matin, soir });
+
+  const periscolaire = matin.length + soir.length;
+  retour({
+    succes:
+      (cantine.length === 0
+        ? "Aucun jour de cantine surveille : vous ne serez plus prevenu d'un repas oublie"
+        : `Cantine surveillee ${cantine.length} jour(s)`) +
+      (periscolaire
+        ? `, periscolaire ${periscolaire} creneau(x).`
+        : ", periscolaire non surveille."),
+  });
+}
+
+export async function actionPause() {
+  const session = await exigerSession();
+  const semaine = semaineAMettreEnPause(aujourdhuiParis());
+  await mettreEnPause(session.parentId, semaine);
+  retour({
+    succes: `Rappels de cantine suspendus pour la semaine du ${semaine}. Le periscolaire continue.`,
+  });
+}
+
+export async function actionReprendre() {
+  const session = await exigerSession();
+  await reprendreAlertes(session.parentId);
+  retour({ succes: "Rappels de cantine reactives." });
+}
+
 export async function actionVerifier() {
   const session = await exigerSession();
   const r = await verifierMaintenant(session.parentId);
@@ -83,11 +123,32 @@ export async function actionVerifier() {
       } : ${apercu.inconnus.join(", ")})`
     : "";
 
+  // Un jour ecarte par un reglage est invisible dans le resultat filtre : le
+  // dire ici est ce qui rend un reglage trop restrictif detectable.
+  const ecartes = apercu.ecartes.length
+    ? ` ${apercu.ecartes.length} jour(s) ecarte(s) par vos reglages : ` +
+      apercu.ecartes.map((m) => `${m.date} ${m.enfant}`).join(", ") + "."
+    : "";
+  const absentes = apercu.absentes.length
+    ? ` ATTENTION : ${apercu.absentes.join(", ")} n'existe(nt) pas sur le portail, aucune ` +
+      "alerte ne partira dessus."
+    : "";
+  const depassees = apercu.depassees.length
+    ? ` ATTENTION : l'echeance est deja passee sur ${apercu.depassees.join(", ")} — ` +
+      "signalez-le, la regle de delai est a revoir."
+    : "";
+  const periscolaire = apercu.periscolaire.length
+    ? ` Periscolaire : ${apercu.periscolaire
+        .map((m) => `${m.date} ${m.enfant} (${m.moment})`)
+        .join(", ")}.`
+    : "";
+  const annexes = `${periscolaire}${ecartes}${absentes}${depassees}`;
+
   if (apercu.rienAVerifier) {
     retour({
       succes:
         `Semaine du ${apercu.semaine} : le portail ne propose aucun repas — vacances ` +
-        `ou hors année scolaire. Rien à réserver.${inconnus}`,
+        `ou hors année scolaire. Rien à réserver.${inconnus}${annexes}`,
     });
   }
   retour({
@@ -95,7 +156,9 @@ export async function actionVerifier() {
       (apercu.manquants.length === 0
         ? `Semaine du ${apercu.semaine} : ${apercu.reserves} réservation(s), rien à signaler.`
         : `Semaine du ${apercu.semaine} : ${apercu.manquants.length} repas non réservé(s) — ` +
-          apercu.manquants.map((m) => `${m.date} ${m.enfant}`).join(", ")) + inconnus,
+          apercu.manquants.map((m) => `${m.date} ${m.enfant}`).join(", ")) +
+      inconnus +
+      annexes,
   });
 }
 
