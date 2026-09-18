@@ -433,6 +433,30 @@ Points de conception qui ont une raison d'être :
   réservé » affirmerait une couverture de la garderie sur des jours qu'on n'a jamais regardés. Un
   passage déclenché par le seul périscolaire ne confirme donc **jamais** — d'où `jourDeNouvelles`
   dans `decider()`.
+- **L'écran de réglages est fait de sections repliées, et c'est le résumé qui rend le repli
+  honnête.** Un `<details>` fermé ne doit rien cacher : `app/reglages/resume.ts` rend pour chaque
+  section un `{ ton, texte }` qui dit son contenu en une ligne — les adresses, les jours cochés, la
+  date de dernière vérification. Ces fonctions sont pures et testées (`tests/resume.test.ts`), parce
+  que le résumé est la seule chose que la plupart des parents liront.
+  ⚠️ **Le même verdict sert à trois choses** : le libellé de la section fermée, son ouverture
+  d'office, et la ligne d'état en tête de page. Les recalculer séparément ferait annoncer « tout est
+  en place » au-dessus d'une section en rouge. `ton: "attention"` marque ce qui empêche le service
+  de faire ce que le parent croit — identifiants absents ou refusés, aucun destinataire, grille
+  vide, `jours_avant` vide — et rien d'autre : une panne passagère du portail n'est pas une faute du
+  parent et reste en `neutre`. ⚠️ **Le résumé de la surveillance nomme le périscolaire même éteint**
+  (« périscolaire non surveillé ») : il part éteint et sans annonce, une carte fermée qui ne
+  parlerait que de cantine le rendrait proprement invisible.
+- **Réussir un enregistrement referme la section ; échouer la laisse ouverte.** C'est ce que porte
+  l'argument `ouvrir` de `retour()` dans `actions.ts`, posé seulement quand la réponse contient une
+  `erreur`. Le repli n'annonce « c'est bon » que si la réussite se voit ; laisser le formulaire
+  ouvert derrière un message de succès obligerait à l'écrire en toutes lettres. Les deux outils
+  (« vérifier maintenant », « tester l'envoi ») passent `rouvrirToujours` : on s'en sert plusieurs
+  fois d'affilée.
+- **Le glyphe du résumé porte le sens, la couleur ne fait que le renforcer.** ✓ et ⚠ plutôt qu'une
+  pastille verte ou rouge : même raisonnement que les emojis d'objet des mails, un rond ne dit rien
+  à un lecteur d'écran ni à qui ne distingue pas les deux teintes. ⚠️ Les règles `.etat.ok` /
+  `.etat.attention` de `globals.css` sont **volontairement hors de `details.pliable`** : un
+  sélecteur plus long l'emporterait sur la couleur du ton et tous les résumés ressortiraient gris.
 - **La page admin ne charge jamais `mdp_chiffre` ni `portail_email`.** L'administrateur n'a aucun
   besoin des identifiants des familles : la requête ne les sélectionne pas.
 - ⚠️ **La réponse de `/api/cron` est agrégée, sans aucune adresse.** Elle transite par le filet

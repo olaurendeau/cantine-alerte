@@ -7,6 +7,7 @@ import {
   formaterJour,
   iso,
   jourDepuisIso,
+  prochaineEcheance,
 } from "../../lib/portail/dates.ts";
 import { chargerReglages, semaineAMettreEnPause } from "../../lib/service/reglages.ts";
 import { estAdmin } from "../../lib/service/verification.ts";
@@ -23,11 +24,19 @@ import {
 } from "./actions.ts";
 import { GrilleSurveillance } from "./grille-surveillance.tsx";
 import { LignesRappel } from "./lignes-rappel.tsx";
+import {
+  etatGlobal,
+  resumeDestinataires,
+  resumeIdentifiants,
+  resumeRappels,
+  resumeSurveillance,
+} from "./resume.ts";
+import { Section } from "./section.tsx";
 
 export default async function Reglages({
   searchParams,
 }: {
-  searchParams: Promise<{ succes?: string; erreur?: string }>;
+  searchParams: Promise<{ succes?: string; erreur?: string; ouvrir?: string }>;
 }) {
   const session = await sessionCourante();
   if (!session) redirect("/connexion");
@@ -35,7 +44,7 @@ export default async function Reglages({
   const reglages = await chargerReglages(session.parentId);
   if (!reglages) redirect("/connexion");
 
-  const { succes, erreur } = await searchParams;
+  const { succes, erreur, ouvrir } = await searchParams;
 
   // Les memes adresses que celles d'un vrai rappel, a defaut celle du compte :
   // un test n'a d'interet que s'il emprunte le chemin reel.
@@ -45,8 +54,41 @@ export default async function Reglages({
 
   // La semaine que le bouton de pause ferait taire, et celle deja mise en
   // silence le cas echeant : les comparer dit si la pause court encore.
-  const semaineCourante = semaineAMettreEnPause(aujourdhuiParis());
+  const aujourdhui = aujourdhuiParis();
+  const semaineCourante = semaineAMettreEnPause(aujourdhui);
   const enPause = reglages.pauseSemaine === semaineCourante;
+
+  // Les resumes sont calcules avant le rendu : ils decident a la fois du
+  // libelle de chaque section fermee, de celles qui s'ouvrent d'office, et de
+  // la ligne d'etat en tete de page. Un seul verdict, trois usages — sinon
+  // l'en-tete finirait par annoncer « tout va bien » au-dessus d'une section
+  // en rouge.
+  const identifiants = resumeIdentifiants(reglages);
+  const destinataires = resumeDestinataires(reglages.destinataires);
+  const surveillance = resumeSurveillance({
+    cantine: reglages.joursCantine,
+    matin: reglages.joursMatin,
+    soir: reglages.joursSoir,
+  });
+  const rappels = resumeRappels({
+    joursAvant: reglages.joursAvant,
+    joursSilencieux: reglages.joursSilencieux,
+    avecCantine: reglages.joursCantine.length > 0,
+  });
+
+  const global = etatGlobal(
+    [
+      identifiants.ton === "attention" && "vos identifiants du portail",
+      destinataires.ton === "attention" && "les destinataires des rappels",
+      surveillance.ton === "attention" && "les jours à surveiller",
+      rappels.ton === "attention" && "les jours de rappel",
+    ].filter((m): m is string => Boolean(m)),
+  );
+
+  // Une section reste ouverte quand elle vient d'etre utilisee et que quelque
+  // chose cloche : replier sur une erreur cacherait le champ a corriger.
+  const ouverte = (nom: string, resume?: { ton: string }) =>
+    ouvrir === nom || resume?.ton === "attention";
 
   return (
     <>
@@ -66,8 +108,24 @@ export default async function Reglages({
         </div>
       )}
 
-      <section className="carte">
-        <h2>Identifiants du portail</h2>
+      <div className={`bilan ${global.ton}`}>
+        <strong>
+          <span aria-hidden="true">{global.ton === "ok" ? "✓ " : "⚠ "}</span>
+          {global.texte}
+        </strong>
+        {global.ton === "ok" && reglages.joursCantine.length > 0 && (
+          <>
+            {" "}
+            Prochaine échéance cantine : {formaterJour(prochaineEcheance(aujourdhui))} à minuit.
+          </>
+        )}
+      </div>
+
+      <Section
+        titre="Identifiants du portail"
+        resume={identifiants}
+        ouvert={ouverte("identifiants", identifiants)}
+      >
         <p className="doux">
           Nécessaires pour consulter vos réservations à votre place. Le mot de passe est chiffré
           et n&apos;est jamais réaffiché : pour le changer, saisissez-en un nouveau.{" "}
@@ -100,10 +158,13 @@ export default async function Reglages({
             : "Aucune vérification réussie pour l'instant."}
           {reglages.derniereErreur && ` Dernière erreur : ${reglages.derniereErreur}`}
         </p>
-      </section>
+      </Section>
 
-      <section className="carte">
-        <h2>Destinataires des rappels</h2>
+      <Section
+        titre="Destinataires des rappels"
+        resume={destinataires}
+        ouvert={ouverte("destinataires", destinataires)}
+      >
         <p className="doux">
           Une adresse par ligne. Souvent les deux parents du foyer. Ces adresses sont
           indépendantes de celle utilisée pour vous connecter.
@@ -115,20 +176,16 @@ export default async function Reglages({
             name="destinataires"
             rows={3}
             defaultValue={reglages.destinataires.join("\n")}
-            style={{
-              width: "100%",
-              padding: "0.55rem 0.7rem",
-              borderRadius: 7,
-              font: "inherit",
-              marginBottom: "1rem",
-            }}
           />
           <button type="submit">Enregistrer les destinataires</button>
         </form>
-      </section>
+      </Section>
 
-      <section className="carte">
-        <h2>Ce que l&apos;on surveille</h2>
+      <Section
+        titre="Ce que l'on surveille"
+        resume={surveillance}
+        ouvert={ouverte("surveillance", surveillance)}
+      >
         <p className="doux">
           Cochez les jours où vos enfants doivent être inscrits.{" "}
           <strong>Cantine</strong> : tout est coché par défaut — décochez les jours où ils ne
@@ -148,10 +205,13 @@ export default async function Reglages({
           />
           <button type="submit">Enregistrer la surveillance</button>
         </form>
-      </section>
+      </Section>
 
-      <section className="carte">
-        <h2>Quand vous donner des nouvelles</h2>
+      <Section
+        titre="Quand vous donner des nouvelles"
+        resume={rappels}
+        ouvert={ouverte("rappels", rappels)}
+      >
         <p className="doux">
           Les réservations de cantine ferment le lundi à minuit pour la semaine suivante.
           Choisissez les jours où vous voulez avoir de nos nouvelles. Une alerte de{" "}
@@ -185,10 +245,26 @@ export default async function Reglages({
           </div>
           <button type="submit">Enregistrer les rappels</button>
         </form>
-      </section>
+      </Section>
 
-      <section className="carte">
-        <h2>Mettre la cantine en pause</h2>
+      <Section
+        titre="Mettre la cantine en pause"
+        // Une pause en cours est un etat que le parent a pose lui-meme et qui
+        // s'efface seul : la section s'ouvre pour qu'il retrouve sans chercher
+        // de quoi la lever.
+        resume={
+          enPause
+            ? {
+                ton: "neutre",
+                texte: `En pause pour la semaine du ${formaterJour(jourDepuisIso(semaineCourante))}.`,
+              }
+            : {
+                ton: "neutre",
+                texte: `Pas de cantine la semaine du ${formaterJour(jourDepuisIso(semaineCourante))} ?`,
+              }
+        }
+        ouvert={ouverte("pause") || enPause}
+      >
         {enPause ? (
           <>
             <div className="message succes">
@@ -214,10 +290,15 @@ export default async function Reglages({
             </form>
           </>
         )}
-      </section>
+      </Section>
 
-      <section className="carte">
-        <h2>Vérifier maintenant</h2>
+      <Section
+        titre="Vérifier maintenant"
+        // Le resume ne reprend pas la phrase d'en dessous : deux fois la meme
+        // chose, c'est la seconde qu'on arrete de lire.
+        resume={{ ton: "neutre", texte: "Voir l'état de la semaine sans attendre un rappel." }}
+        ouvert={ouverte("verifier")}
+      >
         <p className="doux">
           Interroge le portail immédiatement et affiche l&apos;état de la semaine visée, sans
           envoyer de mail.
@@ -227,10 +308,13 @@ export default async function Reglages({
             Vérifier maintenant
           </button>
         </form>
-      </section>
+      </Section>
 
-      <section className="carte">
-        <h2>Tester l&apos;envoi</h2>
+      <Section
+        titre="Tester l'envoi"
+        resume={{ ton: "neutre", texte: "Recevoir le message qui partirait à une date donnée." }}
+        ouvert={ouverte("test")}
+      >
         <p className="doux">
           Envoie à une seule adresse le message qui partirait à la date choisie, avec{" "}
           <strong>[Test]</strong> dans l&apos;objet. La date sert d&apos;« aujourd&apos;hui » : elle
@@ -248,7 +332,7 @@ export default async function Reglages({
             id="dateTest"
             name="date"
             type="date"
-            defaultValue={iso(aujourdhuiParis())}
+            defaultValue={iso(aujourdhui)}
             required
           />
           <label htmlFor="destinataireTest">Envoyer à</label>
@@ -263,7 +347,7 @@ export default async function Reglages({
             Envoyer un mail de test
           </button>
         </form>
-      </section>
+      </Section>
 
       <form action={actionDeconnexion}>
         <button type="submit" className="secondaire">
