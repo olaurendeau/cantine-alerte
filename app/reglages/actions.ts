@@ -23,10 +23,34 @@ async function exigerSession() {
   return session;
 }
 
-/** Ne retourne jamais : `redirect` interrompt le rendu en levant. */
-function retour(params: Record<string, string>): never {
+/** Les sections repliables de l'ecran, telles que `page.tsx` les nomme. */
+type Section =
+  | "identifiants"
+  | "destinataires"
+  | "surveillance"
+  | "rappels"
+  | "pause"
+  | "verifier"
+  | "test";
+
+/**
+ * Ne retourne jamais : `redirect` interrompt le rendu en levant.
+ *
+ * `ouvrir` designe la section a laisser deployee au retour. On ne la rouvre
+ * que sur une erreur : le repli ne dit « c'est bon » que si reussir referme,
+ * et laisser le formulaire ouvert derriere un message de reussite obligerait a
+ * l'ecrire en toutes lettres. Les outils passent `rouvrirToujours` — on s'en
+ * sert plusieurs fois d'affilee, les refermer chaque fois serait une corvee.
+ */
+function retour(
+  params: Record<string, string>,
+  section?: Section,
+  rouvrirToujours = false,
+): never {
   revalidatePath("/reglages");
-  redirect(`/reglages?${new URLSearchParams(params)}`);
+  const query = new URLSearchParams(params);
+  if (section && (rouvrirToujours || params.erreur)) query.set("ouvrir", section);
+  redirect(`/reglages?${query}`);
 }
 
 export async function actionIdentifiants(formData: FormData) {
@@ -35,11 +59,14 @@ export async function actionIdentifiants(formData: FormData) {
   const motDePasse = String(formData.get("motDePasse") ?? "");
 
   if (!portailEmail || !motDePasse) {
-    retour({ erreur: "Renseignez l'identifiant et le mot de passe du portail." });
+    retour({ erreur: "Renseignez l'identifiant et le mot de passe du portail." }, "identifiants");
   }
 
   const r = await enregistrerIdentifiants(session.parentId, portailEmail, motDePasse);
-  retour(r.ok ? { succes: "Identifiants verifies et enregistres." } : { erreur: r.message });
+  retour(
+    r.ok ? { succes: "Identifiants verifies et enregistres." } : { erreur: r.message },
+    "identifiants",
+  );
 }
 
 export async function actionDestinataires(formData: FormData) {
@@ -50,10 +77,10 @@ export async function actionDestinataires(formData: FormData) {
     .filter(Boolean);
 
   if (emails.length === 0) {
-    retour({ erreur: "Indiquez au moins une adresse destinataire." });
+    retour({ erreur: "Indiquez au moins une adresse destinataire." }, "destinataires");
   }
   await enregistrerDestinataires(session.parentId, emails);
-  retour({ succes: `${emails.length} destinataire(s) enregistre(s).` });
+  retour({ succes: `${emails.length} destinataire(s) enregistre(s).` }, "destinataires");
 }
 
 export async function actionRappels(formData: FormData) {
@@ -63,14 +90,17 @@ export async function actionRappels(formData: FormData) {
   await enregistrerRappels(session.parentId, jours, confirmations);
 
   if (jours.length === 0) {
-    retour({ succes: "Rappels desactives : aucun jour selectionne." });
+    retour({ succes: "Rappels desactives : aucun jour selectionne." }, "rappels");
   }
   const muets = jours.filter((n) => !confirmations.includes(n)).length;
-  retour({
-    succes:
-      `${jours.length} jour(s) de rappel enregistre(s)` +
-      (muets ? `, dont ${muets} sans message quand tout est reserve.` : "."),
-  });
+  retour(
+    {
+      succes:
+        `${jours.length} jour(s) de rappel enregistre(s)` +
+        (muets ? `, dont ${muets} sans message quand tout est reserve.` : "."),
+    },
+    "rappels",
+  );
 }
 
 export async function actionSurveillance(formData: FormData) {
@@ -82,36 +112,42 @@ export async function actionSurveillance(formData: FormData) {
   await enregistrerSurveillance(session.parentId, { cantine, matin, soir });
 
   const periscolaire = matin.length + soir.length;
-  retour({
-    succes:
-      (cantine.length === 0
-        ? "Aucun jour de cantine surveille : vous ne serez plus prevenu d'un repas oublie"
-        : `Cantine surveillee ${cantine.length} jour(s)`) +
-      (periscolaire
-        ? `, periscolaire ${periscolaire} creneau(x).`
-        : ", periscolaire non surveille."),
-  });
+  retour(
+    {
+      succes:
+        (cantine.length === 0
+          ? "Aucun jour de cantine surveille : vous ne serez plus prevenu d'un repas oublie"
+          : `Cantine surveillee ${cantine.length} jour(s)`) +
+        (periscolaire
+          ? `, periscolaire ${periscolaire} creneau(x).`
+          : ", periscolaire non surveille."),
+    },
+    "surveillance",
+  );
 }
 
 export async function actionPause() {
   const session = await exigerSession();
   const semaine = semaineAMettreEnPause(aujourdhuiParis());
   await mettreEnPause(session.parentId, semaine);
-  retour({
-    succes: `Rappels de cantine suspendus pour la semaine du ${semaine}. Le periscolaire continue.`,
-  });
+  retour(
+    {
+      succes: `Rappels de cantine suspendus pour la semaine du ${semaine}. Le periscolaire continue.`,
+    },
+    "pause",
+  );
 }
 
 export async function actionReprendre() {
   const session = await exigerSession();
   await reprendreAlertes(session.parentId);
-  retour({ succes: "Rappels de cantine reactives." });
+  retour({ succes: "Rappels de cantine reactives." }, "pause");
 }
 
 export async function actionVerifier() {
   const session = await exigerSession();
   const r = await verifierMaintenant(session.parentId);
-  if (!r.ok) retour({ erreur: r.message });
+  if (!r.ok) retour({ erreur: r.message }, "verifier", true);
 
   const { apercu } = r;
   // Un etat non repertorie est compte comme non reserve, donc sans risque de
@@ -145,21 +181,29 @@ export async function actionVerifier() {
   const annexes = `${periscolaire}${ecartes}${absentes}${depassees}`;
 
   if (apercu.rienAVerifier) {
-    retour({
-      succes:
-        `Semaine du ${apercu.semaine} : le portail ne propose aucun repas — vacances ` +
-        `ou hors année scolaire. Rien à réserver.${inconnus}${annexes}`,
-    });
+    retour(
+      {
+        succes:
+          `Semaine du ${apercu.semaine} : le portail ne propose aucun repas — vacances ` +
+          `ou hors année scolaire. Rien à réserver.${inconnus}${annexes}`,
+      },
+      "verifier",
+      true,
+    );
   }
-  retour({
-    succes:
-      (apercu.manquants.length === 0
-        ? `Semaine du ${apercu.semaine} : ${apercu.reserves} réservation(s), rien à signaler.`
-        : `Semaine du ${apercu.semaine} : ${apercu.manquants.length} repas non réservé(s) — ` +
-          apercu.manquants.map((m) => `${m.date} ${m.enfant}`).join(", ")) +
-      inconnus +
-      annexes,
-  });
+  retour(
+    {
+      succes:
+        (apercu.manquants.length === 0
+          ? `Semaine du ${apercu.semaine} : ${apercu.reserves} réservation(s), rien à signaler.`
+          : `Semaine du ${apercu.semaine} : ${apercu.manquants.length} repas non réservé(s) — ` +
+            apercu.manquants.map((m) => `${m.date} ${m.enfant}`).join(", ")) +
+        inconnus +
+        annexes,
+    },
+    "verifier",
+    true,
+  );
 }
 
 export async function actionTesterMail(formData: FormData) {
@@ -168,10 +212,10 @@ export async function actionTesterMail(formData: FormData) {
   const destinataire = String(formData.get("destinataire") ?? "").trim().toLowerCase();
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    retour({ erreur: "Choisissez une date valide." });
+    retour({ erreur: "Choisissez une date valide." }, "test", true);
   }
   if (!destinataire) {
-    retour({ erreur: "Choisissez l'adresse qui doit recevoir le message de test." });
+    retour({ erreur: "Choisissez l'adresse qui doit recevoir le message de test." }, "test", true);
   }
 
   // jourDepuisIso epingle la date a midi UTC, comme partout ailleurs : lire les
@@ -181,12 +225,16 @@ export async function actionTesterMail(formData: FormData) {
     date: jourDepuisIso(date),
     destinataire,
   });
-  if (!r.ok) retour({ erreur: r.message });
-  retour({
-    succes: r.envoye
-      ? `Message de test envoyé à ${r.destinataire}, objet « ${r.objet} ».`
-      : r.raison,
-  });
+  if (!r.ok) retour({ erreur: r.message }, "test", true);
+  retour(
+    {
+      succes: r.envoye
+        ? `Message de test envoyé à ${r.destinataire}, objet « ${r.objet} ».`
+        : r.raison,
+    },
+    "test",
+    true,
+  );
 }
 
 export async function actionDeconnexion() {

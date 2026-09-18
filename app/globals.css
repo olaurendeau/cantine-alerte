@@ -81,7 +81,8 @@ input[type="email"],
 input[type="password"],
 input[type="text"],
 input[type="date"],
-select {
+select,
+textarea {
   width: 100%;
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--bord);
@@ -183,4 +184,115 @@ th {
 
 .tableau {
   overflow-x: auto;
+}
+
+/*
+ * Sections repliables.
+ *
+ * Le padding descend de la carte vers le resume et le corps : c'est le resume
+ * qui doit porter la zone cliquable, jusqu'aux bords de la carte, sinon une
+ * bande inerte borde un element dont tout dit qu'il s'ouvre au clic.
+ */
+details.pliable {
+  padding: 0;
+}
+
+details.pliable > summary {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.1rem 0.75rem;
+  padding: 1rem 1.25rem;
+  cursor: pointer;
+  /* Le triangle natif est remplace par le chevron ci-dessous, qui suit la
+   * grille au lieu de decaler le titre. */
+  list-style: none;
+}
+
+details.pliable > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.pliable > summary::after {
+  /* Triangles pleins plutot que les petits chevrons U+25BE / U+25B4, que la
+   * plupart des polices systeme rendent trop fins pour se voir a cette taille. */
+  content: "\25BC";
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--doux);
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+details.pliable[open] > summary::after {
+  content: "\25B2";
+}
+
+details.pliable > summary > h2 {
+  grid-column: 1;
+  margin: 0;
+}
+
+details.pliable > summary > .etat {
+  grid-column: 1;
+}
+
+details.pliable > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 10px;
+}
+
+details.pliable > .corps {
+  padding: 0 1.25rem 1.25rem;
+}
+
+/*
+ * Le vert et le rouge ne portent pas le sens a eux seuls — le glyphe du resume
+ * s'en charge — mais ils font trouver la bonne section sans la lire.
+ *
+ * Trois regles de meme portee, et aucune imbriquee dans `details.pliable` : un
+ * selecteur plus long l'emporterait sur la couleur du ton, et le resume
+ * ressortirait gris quoi qu'il annonce.
+ */
+.etat {
+  font-size: 0.9rem;
+  color: var(--doux);
+}
+
+.etat.ok {
+  color: var(--ok);
+}
+
+.etat.attention {
+  color: var(--alerte);
+}
+
+/*
+ * La ligne d'etat, en tete des reglages.
+ *
+ * Elle repond a la seule question qu'on se pose en arrivant : est-ce que le
+ * service tourne ? Volontairement plus discrete qu'un message de resultat, qui
+ * lui parle de l'action qu'on vient de faire.
+ */
+.bilan {
+  background: var(--carte);
+  border: 1px solid var(--bord);
+  border-radius: 10px;
+  padding: 0.8rem 1.1rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.95rem;
+  color: var(--doux);
+}
+
+.bilan.ok > strong {
+  color: var(--ok);
+}
+
+.bilan.attention {
+  border-color: var(--alerte);
+}
+
+.bilan.attention > strong {
+  color: var(--alerte);
 }
