@@ -47,10 +47,15 @@ jobs:
           # cas que --max-time sert a rendre visible — arretait l'etape avant
           # l'affichage du code et du corps, et ne laissait qu'une etape rouge
           # sans aucun diagnostic.
+          #
+          # `?filet=1` dit a l'endpoint que l'appel vient d'ici : il n'envoie
+          # alors PAS de check-in a Sentry. Sans ce marqueur, ce passage
+          # refermerait l'alerte du cron Vercel de 16 h, et la mort de celui-ci
+          # resterait invisible tant que ce filet tient.
           echec=0
           code=$(curl -sS --max-time 320 -o reponse.json -w '%{http_code}' \
             -H "Authorization: Bearer $CRON_SECRET" \
-            "$APP_URL/api/cron") || echec=$?
+            "$APP_URL/api/cron?filet=1") || echec=$?
           echo "HTTP ${code:-aucun} (curl exit $echec)"
           # La reponse est un resume agrege, sans adresse email : les logs de ce
           # workflow sont publics puisque le depot l'est.

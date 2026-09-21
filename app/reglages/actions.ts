@@ -1,5 +1,6 @@
 "use server";
 
+import * as Sentry from "@sentry/nextjs";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { fermerSession, sessionCourante } from "../../lib/auth/session.ts";
@@ -20,6 +21,18 @@ import {
 async function exigerSession() {
   const session = await sessionCourante();
   if (!session) redirect("/connexion");
+  /**
+   * Rattache les erreurs de cette requete a la famille concernee.
+   *
+   * L'UUID seul : jamais l'adresse. Un pseudonyme suffit a repondre a la seule
+   * question utile en depannage — « est-ce une famille ou toutes ? » — et
+   * `nettoyerEvenement` retire de toute facon tout le reste de `user`, y
+   * compris l'IP que le SDK ajoute de lui-meme.
+   *
+   * Pose ici plutot que dans `lib/auth` : le SDK est du code de plateforme, et
+   * `scripts/` execute le meme `lib/` sous Node nu.
+   */
+  Sentry.setUser({ id: session.parentId });
   return session;
 }
 

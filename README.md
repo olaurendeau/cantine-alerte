@@ -106,6 +106,8 @@ Choisissez une date dont la semaine cible n'est pas encore réservée pour voir 
 | `CANTINE_PRESTATION_MATIN`, `CANTINE_PRESTATION_SOIR` | Regex du périscolaire (défauts `Gmat|Garderie matin`, `Gsoir|Garderie soir`). Absentes du portail = signalées, pas bloquantes. |
 | `CANTINE_EXCLUSIONS` | Dates à ignorer, `YYYY-MM-DD` séparées par des virgules. **Cantine seule** : une sortie scolaire supprime le repas, pas la garderie. |
 | `CANTINE_PAUSE_MS` | Pause entre deux familles dans le cron (défaut 3000). Le throttling du portail est par IP. |
+| `NEXT_PUBLIC_SENTRY_DSN` | Supervision. **Vide = SDK non initialisé**, le service tourne à l'identique. |
+| `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | Téléversement des sources au build. Absents = étape sautée, le build réussit. |
 
 **Déployer pour une autre commune** : ouvrez la page de connexion de votre portail et relevez les
 champs cachés `api_key`, `type` et `db` du formulaire, ainsi que le nom de base dans l'URL. Puis

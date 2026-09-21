@@ -33,6 +33,8 @@ import { decider } from "./decision.ts";
 import type { CleSurveillance, Logger } from "../portail/types.ts";
 import { silencieux } from "../portail/types.ts";
 import { reessayer } from "../reessayer.ts";
+// Classification pure, sans SDK : `scripts/cron.ts` l'execute sous Node nu.
+import { natureDe, type NatureEchec } from "../supervision/filtres.ts";
 import { urlPublique } from "../url-publique.ts";
 
 const SEUIL_DESACTIVATION = 3;
@@ -113,6 +115,16 @@ export type ResultatParent = {
   absentes?: CleSurveillance[];
   /** Surveillances dont la fenetre calculee arrive apres l'echeance reelle. */
   depassees?: CleSurveillance[];
+  /**
+   * Famille de l'erreur, quand il y en a une.
+   *
+   * ⚠️ `statut` ne suffit pas : `ErreurStructure` et `ErreurTemporaire`
+   * tombent toutes deux en `echec_technique`, alors que la premiere veut dire
+   * « le portail a change, le parsing est a reprendre » et la seconde « ca
+   * remarchera tout seul ». La supervision en fait deux niveaux d'alerte
+   * differents, et le CLI l'affiche.
+   */
+  nature?: NatureEchec;
 };
 
 export type ResultatCron = {
@@ -574,6 +586,7 @@ async function traiterParent(
       ...base,
       statut: invalides ? "identifiants_invalides" : "echec_technique",
       detail,
+      nature: natureDe(erreur),
     };
   }
 }

@@ -485,6 +485,69 @@ Points de conception qui ont une raison d'être :
 - **La CI (`.github/workflows/ci.yml`) joue `typecheck`, `test` et `test:tz` à chaque poussée.**
   Les tests sont purs : ni base, ni réseau, ni secret, donc rien à configurer.
 
+## La supervision
+
+Sentry, région UE. Plan : `docs/plans/supervision-sentry.md`.
+
+Le service a deux modes d'échec et un seul se voyait. Le bruyant remonte dans les journaux Vercel —
+encore faut-il aller regarder. Le **silencieux** est le seul qui coûte un repas : le cron n'a pas
+tourné du tout, `nonTraites > 0`, une `ErreurStructure` qui casse le parsing, une
+`fenetresDepassees` qui dénonce la règle périscolaire déduite. Ces quatre signaux existaient déjà
+dans le code ; ils atterrissaient dans `console.log` et dans la réponse de `/api/cron`, c'est-à-dire
+dans deux endroits que personne ne consulte un mardi soir.
+
+- ⚠️ **`tunnelRoute: "/supervision"` est ce qui garde la CSP intacte.** Les événements du navigateur
+  sont postés sur une route de **notre** origine, qui les relaie : `connect-src 'self'` reste vrai.
+  Ne pas « corriger » en ajoutant le domaine d'ingestion à la CSP — ce serait rouvrir une sortie
+  directe vers un tiers depuis la page de connexion, pour un besoin qui n'existe pas. Effet de bord
+  voulu : les bloqueurs de publicité, qui connaissent les domaines d'ingestion, cessent d'avaler les
+  rapports.
+- ⚠️ **Des jetons vifs circulent en query string** (`/connexion/verifier?token=`, `/pause`,
+  `/desabonnement`). Sentry capture les URL par défaut : sans filtrage, une erreur sur ces routes
+  expédierait un jeton de session **valide** chez un tiers. `lib/supervision/anonymiser.ts` coupe
+  toute URL avant le `?`, partout — événement, requête, fil d'Ariane. On ne filtre pas paramètre par
+  paramètre : une liste de noms sensibles oublierait celui qu'on ajoutera l'an prochain.
+- ⚠️ **Jamais `sendDefaultPii`, jamais `includeLocalVariables`.** Le mot de passe du portail est
+  déchiffré en mémoire pendant le cycle : il se retrouverait dans la pile de la première erreur venue.
+  **Pas de Session Replay** non plus, et ce n'est pas un oubli — il filmerait l'écran du parent, donc
+  les prénoms de ses enfants.
+- **`lib/supervision/` est pur, le SDK vit dans `app/`.** `anonymiser.ts`, `filtres.ts` et
+  `signaux.ts` n'importent rien de Sentry : la CI les teste sans réseau ni secret, et surtout
+  `scripts/cron.ts` exécute le même cycle sous Node nu — un import du SDK Next l'y suivrait.
+  L'envoi est dans `app/api/cron/supervision.ts`, dont c'est le seul rôle.
+- ⚠️ **L'asymétrie du service ne se transpose pas à la supervision.** « Une alerte en trop est
+  bénigne » vaut pour les parents ; ici c'est l'inverse — une alerte d'exploitation de trop, répétée
+  chaque jour, apprend à ne plus les lire et la vraie panne passe avec les autres. D'où
+  `lib/supervision/filtres.ts` : `ErreurIdentifiants` et les `429` ne partent **jamais**. Le parent a
+  changé son mot de passe, le service le désactive et lui écrit — c'est le fonctionnement normal, pas
+  une panne. Une `ErreurTemporaire` en 5xx, elle, passe en `warning`.
+- ⚠️ **`statut` ne suffit pas à trancher** : `ErreurStructure` et `ErreurTemporaire` tombent toutes
+  deux en `echec_technique`, alors que l'une veut dire « reprendre le parsing » et l'autre « ça
+  remarchera seul ». D'où le champ `nature` sur `ResultatParent` — une **donnée**, pas un appel à
+  Sentry, pour que `lib/` reste ignorant de la plateforme.
+- **Une empreinte fixe par signal** (`setFingerprint`). Sans elle, deux libellés légèrement
+  différents ouvriraient deux issues et la boîte grossirait jusqu'à ce qu'on cesse de la lire. Un
+  type de signal = une issue, qui se rouvre quand le problème revient. `signauxDe()` est pure et
+  testée, comme `decider()` : décider s'il faut réveiller quelqu'un est une décision métier.
+- ⚠️ **Le filet GitHub Actions appelle `/api/cron?filet=1` et ne signe PAS de check-in.** Les deux
+  appelants partagent l'endpoint ; si le passage de 19 h pointait lui aussi, il refermerait l'alerte
+  du cron Vercel de 16 h et la mort de celui-ci resterait invisible tant que le filet tient. En le
+  laissant muet on obtient la bonne sémantique : les rappels partent quand même, **et** Sentry
+  signale que le cron Vercel n'a pas tourné. Le `checkinMargin` de 60 min est calé sur le passage de
+  16 h — le plan Hobby déclenche à ±59 minutes.
+- ⚠️ **`Sentry.flush()` avant de rendre la réponse.** Une fonction serverless est gelée dès qu'elle
+  a répondu : sans ce vidage, les événements en file partent à la poubelle, et la supervision se tait
+  précisément les jours où elle aurait servi.
+- **Pas de DSN, pas de SDK.** `NEXT_PUBLIC_SENTRY_DSN` vide et rien ne s'initialise : le service
+  tourne à l'identique en local, dans l'image Docker, et chez un contributeur parti du
+  `.env.example`. Le build réussit aussi sans `SENTRY_AUTH_TOKEN` — le téléversement des sources est
+  simplement sauté. **Les deux cas sont à vérifier après toute montée de version du SDK**, ce sont
+  ceux qui cassent en premier.
+- ⚠️ **La page `/confidentialite` nomme Sentry comme sous-traitant.** Elle affirmait « aucune donnée
+  n'est transmise à un tiers » : ajouter un service d'observabilité sans toucher à cette phrase
+  aurait fait mentir la page. Elle dit maintenant ce qui part et ce qui ne part pas, et renvoie au
+  code qui le garantit.
+
 ## Les mails
 
 Cinq messages — rappel, confirmation, lien de connexion, échec parent, échec admin — tous construits

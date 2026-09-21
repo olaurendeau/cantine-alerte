@@ -1,3 +1,6 @@
+// Depuis `@sentry/nextjs/config` et non la racine : l'import racine est
+// deprecie et cessera de fonctionner en v11.
+import { withSentryConfig } from "@sentry/nextjs/config";
 import type { NextConfig } from "next";
 
 /**
@@ -46,6 +49,11 @@ const ENTETES = [
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
       "font-src 'self'",
+      // ⚠️ Reste 'self' MALGRE le SDK Sentry navigateur, et ce n'est pas un
+      // oubli : `tunnelRoute` ci-dessous fait transiter les evenements par
+      // notre propre origine. Ne pas « corriger » en ajoutant le domaine
+      // d'ingestion — ce serait rouvrir une sortie directe vers un tiers
+      // depuis la page de connexion, pour un besoin qui n'existe pas.
       "connect-src 'self'",
       "frame-ancestors 'none'",
       "base-uri 'self'",
@@ -70,4 +78,35 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+/**
+ * Supervision Sentry.
+ *
+ * Le wrapper ne fait rien de visible sans variables : pas de DSN, pas d'envoi ;
+ * pas de jeton, pas de televersement de sources. C'est ce qui permet au build
+ * Docker et a un contributeur parti du `.env.example` de fonctionner
+ * a l'identique.
+ */
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  // Absent en local et dans l'image Docker : le plugin saute alors le
+  // televersement des sources au lieu d'echouer.
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+
+  /**
+   * ⚠️ La piece qui garde la CSP intacte.
+   *
+   * Les evenements du navigateur sont postes sur cette route de NOTRE origine,
+   * qui les relaie. Deux effets, tous deux voulus : `connect-src 'self'` reste
+   * vrai, et les bloqueurs de publicite — qui connaissent les domaines
+   * d'ingestion — cessent d'avaler les rapports.
+   *
+   * Chemin fixe plutot que `true`, qui en tire un au hasard a chaque
+   * deploiement : une route stable se retrouve dans le code et se teste.
+   * Le projet n'a pas de middleware, donc rien a exclure d'un matcher.
+   */
+  tunnelRoute: "/supervision",
+
+  // Les journaux du plugin n'ont d'interet qu'en cas de probleme de build.
+  silent: !process.env.CI,
+});

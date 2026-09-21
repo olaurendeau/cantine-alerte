@@ -67,12 +67,50 @@ export default function Confidentialite() {
         <h2>Ce que nous ne faisons pas</h2>
         <ul>
           <li>Aucune reservation n&apos;est posee a votre place : le service se contente de lire.</li>
-          <li>Aucune donnee n&apos;est transmise a un tiers, en dehors de l&apos;envoi des mails.</li>
+          <li>
+            Aucune donnee n&apos;est vendue, ni utilisee a des fins publicitaires ou statistiques.
+          </li>
+          <li>Aucun cookie de mesure d&apos;audience, aucun traceur.</li>
           <li>
             L&apos;administrateur du service voit la liste des comptes et leur etat de
             fonctionnement, jamais les identifiants des familles.
           </li>
         </ul>
+      </section>
+
+      <section className="carte">
+        <h2>Les prestataires techniques</h2>
+        <p>
+          Faire fonctionner le service demande trois intermediaires. Aucun ne recoit votre mot de
+          passe du portail, qui ne quitte jamais l&apos;application.
+        </p>
+        <ul>
+          <li>
+            <strong>L&apos;hebergeur</strong> execute l&apos;application et heberge la base de
+            donnees : il detient donc l&apos;ensemble des donnees listees plus haut.
+          </li>
+          <li>
+            <strong>Le service d&apos;envoi</strong> recoit les adresses destinataires et le
+            contenu des rappels, prenoms des enfants compris, puisque c&apos;est lui qui expedie les
+            messages.
+          </li>
+          <li>
+            <strong>Sentry</strong> (heberge dans l&apos;Union europeenne) recoit les erreurs
+            techniques, pour que les pannes se voient au lieu de passer inapercues. Il ne recoit{" "}
+            <strong>ni votre adresse, ni les prenoms de vos enfants</strong> : les rapports
+            d&apos;erreur ne portent qu&apos;un identifiant de compte anonyme, et les adresses mail
+            comme les liens personnels en sont retires avant l&apos;envoi.
+          </li>
+        </ul>
+        <p>
+          Ce filtrage n&apos;est pas une intention : il est ecrit dans le code, sous{" "}
+          <code>lib/supervision</code>, et verifie par des tests automatises que vous pouvez lire
+          sur{" "}
+          <a href={urlDepot()} target="_blank" rel="noreferrer noopener">
+            le depot du code source
+          </a>
+          .
+        </p>
       </section>
 
       <section className="carte">
