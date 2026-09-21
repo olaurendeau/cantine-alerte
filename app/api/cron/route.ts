@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { egaliteConstante } from "../../../lib/crypto.ts";
 import { executerCron } from "../../../lib/service/verification.ts";
 import type { ResultatCron } from "../../../lib/service/verification.ts";
+import {
+  demarrerCheckIn,
+  signalerCycle,
+  signalerCycleInterrompu,
+  terminerCheckIn,
+  vider,
+} from "./supervision.ts";
 
 // Le cycle interroge le portail pour chaque famille, avec une pause entre
 // chacune pour ne pas declencher le throttling par IP. On prend la marge
@@ -91,6 +98,22 @@ function resume(resultat: ResultatCron) {
   };
 }
 
+/**
+ * Vrai si l'appel vient du filet GitHub Actions et non du cron Vercel.
+ *
+ * ⚠️ Le filet ne doit PAS signer le check-in, et c'est tout l'interet.
+ * Les deux appellent le meme endpoint ; si le filet de 19 h pointait aussi,
+ * il refermerait l'alerte du cron de 16 h et la mort de celui-ci resterait
+ * invisible. En le laissant muet, on obtient la bonne semantique : les rappels
+ * partent quand meme, ET Sentry signale que le cron Vercel n'a pas tourne.
+ *
+ * Le parametre est explicite plutot que devine d'un en-tete Vercel : c'est
+ * nous qui posons les deux appelants, autant le dire.
+ */
+function estLeFilet(requete: Request): boolean {
+  return new URL(requete.url).searchParams.get("filet") === "1";
+}
+
 async function executer(requete: Request) {
   if (!autorise(requete)) {
     return NextResponse.json({ erreur: "non autorise" }, { status: 401 });
@@ -102,6 +125,8 @@ async function executer(requete: Request) {
   } catch (e) {
     return NextResponse.json({ erreur: (e as Error).message }, { status: 400 });
   }
+
+  const checkInId = estLeFilet(requete) ? undefined : demarrerCheckIn();
 
   let resultat: ResultatCron;
   try {
@@ -119,11 +144,21 @@ async function executer(requete: Request) {
     // le pilote. Le filet GitHub Actions imprime la reponse telle quelle dans
     // des journaux publics, au meme titre que le resume ci-dessous.
     console.error("[cron] cycle interrompu :", (e as Error).message);
+    signalerCycleInterrompu(e);
+    terminerCheckIn(checkInId, "error");
+    await vider();
     return NextResponse.json({ erreur: "cycle interrompu" }, { status: 500 });
   }
 
   // Le detail nominatif reste dans les logs Vercel, qui sont prives.
   console.log("[cron]", JSON.stringify(resultat));
+  // Les signaux d'exploitation partent vers Sentry : `nonTraites`,
+  // `fenetresDepassees` et les echecs de parsing ne servent a rien dans un
+  // journal que personne ne lit un mardi soir.
+  signalerCycle(resultat);
+  terminerCheckIn(checkInId, "ok");
+  await vider();
+
   // La reponse, elle, est agregee : elle transite par le filet GitHub Actions,
   // dont les logs sont publics puisque le depot l'est. Y laisser les adresses
   // des familles publierait la liste des inscrits.

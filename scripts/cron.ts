@@ -42,7 +42,10 @@ if (resultat.traites.length === 0) {
   console.log("Aucun compte n'a demande de rappel a J-" + resultat.joursRestants);
 }
 for (const t of resultat.traites) {
-  console.log(`${t.email} -> ${t.statut}${t.detail ? ` (${t.detail})` : ""}`);
+  // La nature distingue ce que le statut confond : `echec_technique` recouvre
+  // « le portail a change » et « le portail est en panne ».
+  const nature = t.nature && t.nature !== "identifiants" ? ` [${t.nature}]` : "";
+  console.log(`${t.email} -> ${t.statut}${nature}${t.detail ? ` (${t.detail})` : ""}`);
   if (t.inconnus?.length) {
     console.error(
       `  Attention : etat(s) non repertorie(s) ${t.inconnus.join(", ")}, traite(s) comme ` +
