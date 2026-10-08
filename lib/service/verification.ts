@@ -125,6 +125,16 @@ export type ResultatParent = {
    * differents, et le CLI l'affiche.
    */
   nature?: NatureEchec;
+  /**
+   * Echecs consecutifs de cette famille, tels que `echec()` vient de les
+   * compter.
+   *
+   * ⚠️ C'est la seule mesure de « est-ce que ca dure ». Sans elle, la
+   * supervision ne peut pas distinguer un hoquet d'une panne installee, et
+   * doit choisir un niveau d'alerte unique pour les deux — soit elle crie tous
+   * les jours, soit elle se tait quand il faudrait crier.
+   */
+  echecsConsecutifs?: number;
 };
 
 export type ResultatCron = {
@@ -311,7 +321,12 @@ export async function executerCron({
         // pan de pannes — une erreur echappee de traiterParent, la base qui
         // cligne — restait silencieux, ce que la supervision existe justement
         // pour empecher.
-        nature: "inconnue",
+        //
+        // `cycle` et non `inconnue` : ce chemin-ci court-circuite `alerter()`,
+        // donc la famille n'a meme pas recu de mail d'echec technique. Les
+        // confondre ferait chercher un bug de boucle la ou le parent a en
+        // realite ete prevenu.
+        nature: "cycle",
       });
     }
   }
@@ -593,6 +608,7 @@ async function traiterParent(
       statut: invalides ? "identifiants_invalides" : "echec_technique",
       detail,
       nature: natureDe(erreur),
+      echecsConsecutifs: echecs,
     };
   }
 }

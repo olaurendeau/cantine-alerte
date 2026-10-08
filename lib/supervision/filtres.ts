@@ -42,8 +42,16 @@ export function aIgnorer(erreur: unknown): boolean {
   return false;
 }
 
-/** Les natures d'echec que le cycle sait distinguer, cf. `ResultatParent`. */
-export type NatureEchec = "identifiants" | "temporaire" | "structure" | "inconnue";
+/**
+ * Les natures d'echec que le cycle sait distinguer, cf. `ResultatParent`.
+ *
+ * ⚠️ `cycle` et `inconnue` ne sont pas synonymes, et les confondre a deja
+ * induit en erreur : `inconnue` sort du `catch` de `traiterParent`, qui a donc
+ * appele `alerter()` — le parent a recu son mail d'echec technique. `cycle`
+ * sort du filet de derniere instance d'`executerCron`, qui court-circuite
+ * `alerter()` : la famille n'a RIEN recu. Le diagnostic n'est pas le meme.
+ */
+export type NatureEchec = "identifiants" | "temporaire" | "structure" | "inconnue" | "cycle";
 
 /**
  * La nature d'une erreur, telle que le cycle la consigne.

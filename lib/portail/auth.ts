@@ -46,8 +46,9 @@ export class ErreurTemporaire extends Error {
 
 /**
  * Le portail a repondu, mais pas ce qu'on sait lire : champ cache absent, JSON
- * illisible, structure du payload changee, statut inattendu sur un point
- * d'entree documente (401, 403, 404). Rejouer ne peut pas aider — la
+ * illisible, structure du payload changee, ou 404 sur un point d'entree
+ * documente — un point d'entree qui disparait, c'est bien l'API qui a change.
+ * ⚠️ 401 et 403 N'EN SONT PLUS : cf. `refuserSiIndisponible`. Rejouer ne peut pas aider — la
  * reponse sera identique — et chaque tentative refait les quatre sauts de
  * connexion, donc alimente le throttling par IP qu'on cherche justement a
  * eviter. Ces erreurs demandent une correction du parsing, pas de la patience.
@@ -202,10 +203,6 @@ export async function login(
   if (premiere.status === 419) {
     throw new Error("419 : session ou CSRF invalide cote Laravel (cookies non transmis ?)");
   }
-  // Avant d'interpreter l'absence de token comme un refus, ecarter les cas ou
-  // le portail n'a tout simplement pas traite la demande.
-  refuserSiIndisponible(premiere.status, "la soumission des identifiants");
-
   // Le code HTTP ne distingue pas succes et echec : sur echec le portail
   // renvoie un 302 vers /connexion, donc un corps quasi vide. Le verdict se
   // prend sur la presence d'un JWT emis par le serveur d'authentification.
@@ -217,6 +214,21 @@ export async function login(
   const auth = candidats.find((t) => jwtPayload(t).iss === "3douest-auth-server");
   if (!auth) {
     const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));
+    // ⚠️ Le classement par statut ne passe qu'ICI, apres le verdict, et
+    // seulement si le portail n'a rien dit. C'est ce qui preserve la regle
+    // « la discrimination succes/echec ne se fait pas sur le code HTTP » :
+    // un bloc role="alert" prouve que le portail a TRAITE les identifiants,
+    // donc qu'il les refuse — meme s'il repond 403. Classer sur le statut
+    // avant de regarder laisserait un refus reel passer pour une panne
+    // passagere : le compte ne serait jamais desactive, et le parent lirait
+    // indefiniment « vos identifiants ne sont pas en cause ».
+    //
+    // A l'inverse, sans message du portail, un 401/403 vient d'un pare-feu ou
+    // d'un proxy qui n'a pas transmis la demande : ErreurTemporaire, donc
+    // aucune desactivation d'un compte parfaitement valide.
+    if (erreurs.length === 0) {
+      refuserSiIndisponible(premiere.status, "la soumission des identifiants");
+    }
     throw new ErreurIdentifiants(
       `Connexion refusee (HTTP ${premiere.status}) : identifiants invalides, ` +
         "throttling, ou verification d'appareil de confiance active.",

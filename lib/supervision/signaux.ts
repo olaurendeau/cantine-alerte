@@ -1,3 +1,4 @@
+import { sansAdresses } from "./anonymiser.ts";
 import type { ResultatCron } from "../service/verification.ts";
 
 /**
@@ -15,6 +16,17 @@ import type { ResultatCron } from "../service/verification.ts";
  * fixe par signal pour que chacun reste UNE issue qui se rouvre.
  */
 export type NiveauSignal = "error" | "warning";
+
+/**
+ * Au-dela de ce nombre de cycles consecutifs en echec, une indisponibilite
+ * n'est plus passagere.
+ *
+ * Trois cycles valent environ un jour et demi, le cron passant deux fois par
+ * jour. Volontairement aligne sur le seuil de desactivation d'un compte, qui
+ * repose sur le meme raisonnement : trois fois d'affilee, ce n'est plus un
+ * accident. Ce sont deux decisions distinctes, d'ou deux constantes.
+ */
+const SEUIL_PANNE_DURABLE = 3;
 
 export type Signal = {
   /** Empreinte stable : une issue par type de signal, jamais une par libelle. */
@@ -76,40 +88,76 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
       contexte: {
         familles: structure.length,
         parentIds: structure,
-        exemple: resultat.traites.find((t) => t.nature === "structure")?.detail,
+        exemple: sansAdresses(resultat.traites.find((t) => t.nature === "structure")?.detail ?? ""),
+      },
+    });
+  }
+
+  const horsCycle = parentsDeNature("cycle");
+  if (horsCycle.length) {
+    // Le filet de derniere instance d'`executerCron` : une erreur a echappe a
+    // `traiterParent`. On ne sait pas ce que c'est, et c'est bien le probleme —
+    // ce chemin court-circuite `alerter()`, donc la famille n'a meme pas recu
+    // de mail d'echec technique.
+    signaux.push({
+      empreinte: "erreur-non-rattrapee",
+      niveau: "error",
+      message: `Erreur non rattrapee dans le cycle pour ${horsCycle.length} famille(s)`,
+      contexte: {
+        familles: horsCycle.length,
+        parentIds: horsCycle,
+        exemple: sansAdresses(resultat.traites.find((t) => t.nature === "cycle")?.detail ?? ""),
       },
     });
   }
 
   const inattendues = parentsDeNature("inconnue");
   if (inattendues.length) {
-    // Le filet de derniere instance de `executerCron` : une erreur a echappe a
-    // `traiterParent`. On ne sait pas ce que c'est, et c'est bien le probleme —
-    // le parent n'a meme pas recu de mail d'echec technique, puisque ce chemin
-    // court-circuite `alerter()`.
+    // Erreur non classee sortie du `catch` de `traiterParent` — un 419 Laravel,
+    // par exemple, qui leve une Error nue. ⚠️ Contrairement au cas ci-dessus,
+    // `alerter()` a bien tourne : le parent a ete prevenu. Les confondre
+    // enverrait chercher un bug de boucle la ou le parent est au courant.
     signaux.push({
-      empreinte: "erreur-non-rattrapee",
-      niveau: "error",
-      message: `Erreur non rattrapee dans le cycle pour ${inattendues.length} famille(s)`,
+      empreinte: "erreur-non-classee",
+      niveau: "warning",
+      message: `Erreur non classee pour ${inattendues.length} famille(s)`,
       contexte: {
         familles: inattendues.length,
         parentIds: inattendues,
-        exemple: resultat.traites.find((t) => t.nature === "inconnue")?.detail,
+        exemple: sansAdresses(resultat.traites.find((t) => t.nature === "inconnue")?.detail ?? ""),
       },
     });
   }
 
   // — warning : a regarder, sans reveiller personne —
 
-  const temporaires = parentsDeNature("temporaire");
+  const temporaires = resultat.traites.filter((t) => t.nature === "temporaire");
   if (temporaires.length) {
-    // Les 429 n'arrivent jamais jusqu'ici : `aIgnorer` les ecarte a la source.
-    // Restent les 5xx, donc un portail reellement en panne.
+    // 429 (debit limite), 401/403 (session refusee) et 5xx (portail en panne).
+    // ⚠️ `aIgnorer` ne les ecarte PAS ici : il s'applique dans `beforeSend` sur
+    // l'exception d'origine, or ces signaux sont des `captureMessage` sans
+    // exception. Un throttling remonte donc bien, ce qui est souhaitable — il
+    // dit que le service s'est fait freiner.
+    const duree = Math.max(0, ...temporaires.map((t) => t.echecsConsecutifs ?? 0));
+    // ⚠️ Au-dela de ce seuil, ce n'est plus un hoquet. Sans cette escalade, une
+    // panne PERMANENTE — cle de tenant revoquee, point d'entree passe derriere
+    // un nouveau scope — se contenterait d'un warning quotidien, noye dans la
+    // meme issue que les coupures de cinq minutes, pendant que toutes les
+    // familles perdent tous leurs rappels. L'empreinte differe aussi : noyer
+    // l'une dans l'autre reviendrait a ne pas escalader du tout.
+    const durable = duree >= SEUIL_PANNE_DURABLE;
     signaux.push({
-      empreinte: "portail-indisponible",
-      niveau: "warning",
-      message: `Portail indisponible pour ${temporaires.length} famille(s)`,
-      contexte: { familles: temporaires.length, parentIds: temporaires },
+      empreinte: durable ? "portail-indisponible-durable" : "portail-indisponible",
+      niveau: durable ? "error" : "warning",
+      message: durable
+        ? `Portail indisponible depuis ${duree} cycles pour ${temporaires.length} famille(s) : ` +
+          "ce n'est plus passager"
+        : `Portail indisponible pour ${temporaires.length} famille(s)`,
+      contexte: {
+        familles: temporaires.length,
+        parentIds: temporaires.map((t) => t.parentId),
+        echecsConsecutifs: duree,
+      },
     });
   }
 

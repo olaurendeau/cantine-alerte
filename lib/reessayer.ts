@@ -28,12 +28,16 @@ export type OptionsReessai = {
  *
  * - identifiants refuses : reessayer ne peut pas reussir et enchainer les
  *   tentatives risque de faire verrouiller le compte du parent ;
- * - toute ErreurTemporaire hors 5xx (429, 401, 403) : le portail limite deja le
- *   debit ou refuse la session. Insister prolonge le blocage dans le premier
- *   cas et ne change rien dans les autres — et chaque tentative refait les
- *   QUATRE sauts de connexion, soit exactement le motif qui a deja fait tomber
- *   un 429 sur le compte suivant. Le cycle tourne deux fois par jour : c'est
- *   lui qui rejoue, pas cette boucle ;
+ * - toute ErreurTemporaire en 4xx (429, 401, 403) : le portail limite deja le
+ *   debit ou refuse la session. ⚠️ Un 401 sur les prestations REUSSIRAIT
+ *   peut-etre au coup suivant — le reessai refait les quatre sauts et obtient
+ *   un Bearer neuf. Ce n'est pas la raison de s'abstenir : la raison est qu'on
+ *   prefere risquer CE rappel plutot que le 429 qui couterait ceux de toutes
+ *   les familles suivantes, le throttling du portail etant par adresse IP.
+ *   Trois tentatives valent trois connexions completes, soit exactement le
+ *   motif qui a deja fait tomber un 429 sur le compte suivant. Le cycle passe
+ *   deux fois par jour : c'est lui qui rejoue, pas cette boucle. Il faut
+ *   assumer qu'au passage du soir un jour J-0, ce rappel est perdu ;
  * - structure illisible : le portail a repondu, mais son HTML ou son JSON a
  *   change. La reponse sera identique au coup suivant, et chaque tentative
  *   refait les quatre sauts de connexion — donc pousse vers le 429 qu'on
@@ -44,9 +48,12 @@ export type OptionsReessai = {
 export const nePasRejouer = (e: unknown): boolean =>
   e instanceof ErreurIdentifiants ||
   e instanceof ErreurStructure ||
-  // Seuls les 5xx sont rejoues : c'est la regle « rejouee sur 5xx, jamais sur
-  // 429 », etendue aux autres 4xx qui l'ont rejointe (401, 403).
-  (e instanceof ErreurTemporaire && e.statut < 500);
+  // Les 4xx ne sont pas rejoues ; les 5xx le restent. ⚠️ La borne basse n'est
+  // pas decorative : `statut < 500` seul ecarterait aussi un futur
+  // `ErreurTemporaire("timeout", 0)` pose pour un AbortSignal — extension
+  // naturelle vu la conception des delais — alors qu'une erreur reseau merite
+  // justement un nouvel essai. On echoue du bon cote.
+  (e instanceof ErreurTemporaire && e.statut >= 400 && e.statut < 500);
 
 const dormir = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

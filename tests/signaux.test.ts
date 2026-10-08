@@ -135,17 +135,73 @@ test("aucun signal ne transporte d'adresse", () => {
 
 test("une erreur echappee au cycle ne reste pas silencieuse", () => {
   // Le filet de derniere instance de `executerCron` posait un `echec_technique`
-  // sans nature : aucun signal n'en sortait, et le parent ne recevait meme pas
+  // sans nature : aucun signal n'en sortait, et la famille ne recevait meme pas
   // de mail d'echec technique puisque ce chemin court-circuite `alerter()`.
   const [signal, ...reste] = signauxDe(
     cycle({
-      traites: [parent({ statut: "echec_technique", nature: "inconnue", detail: "db timeout" })],
+      traites: [parent({ statut: "echec_technique", nature: "cycle", detail: "db timeout" })],
     }),
   );
   assert.equal(reste.length, 0);
   assert.equal(signal?.empreinte, "erreur-non-rattrapee");
   assert.equal(signal?.niveau, "error");
   assert.equal(signal?.contexte.exemple, "db timeout");
+});
+
+test("une erreur non classee ne se confond pas avec une erreur echappee", () => {
+  // `inconnue` sort du catch de traiterParent, qui a appele `alerter()` : le
+  // parent EST prevenu. Les confondre enverrait chercher un bug de boucle la ou
+  // il n'y en a pas — d'ou deux empreintes et deux niveaux.
+  const [signal, ...reste] = signauxDe(
+    cycle({
+      traites: [parent({ statut: "echec_technique", nature: "inconnue", detail: "419 Laravel" })],
+    }),
+  );
+  assert.equal(reste.length, 0);
+  assert.equal(signal?.empreinte, "erreur-non-classee");
+  assert.equal(signal?.niveau, "warning");
+});
+
+test("une indisponibilite qui dure cesse d'etre un simple avertissement", () => {
+  // Sans escalade, une panne PERMANENTE — cle de tenant revoquee, point
+  // d'entree deplace — se contenterait d'un warning quotidien noye dans la meme
+  // issue que les coupures de cinq minutes, pendant que toutes les familles
+  // perdent tous leurs rappels.
+  const passager = signauxDe(
+    cycle({
+      traites: [parent({ statut: "echec_technique", nature: "temporaire", echecsConsecutifs: 1 })],
+    }),
+  );
+  assert.equal(passager[0]?.empreinte, "portail-indisponible");
+  assert.equal(passager[0]?.niveau, "warning");
+
+  const installe = signauxDe(
+    cycle({
+      traites: [parent({ statut: "echec_technique", nature: "temporaire", echecsConsecutifs: 3 })],
+    }),
+  );
+  assert.equal(installe[0]?.empreinte, "portail-indisponible-durable");
+  assert.equal(installe[0]?.niveau, "error");
+  assert.equal(installe[0]?.contexte.echecsConsecutifs, 3);
+});
+
+test("un motif d'erreur citant une adresse ne la transporte pas", () => {
+  // Les messages du portail et de Brevo citent volontiers l'adresse, et
+  // `exemple` les recopie tels quels.
+  for (const nature of ["structure", "cycle", "inconnue"] as const) {
+    const [signal] = signauxDe(
+      cycle({
+        traites: [
+          parent({
+            statut: "echec_technique",
+            nature,
+            detail: "refus pour parent@exemple.fr",
+          }),
+        ],
+      }),
+    );
+    assert.equal(signal?.contexte.exemple, "refus pour [adresse]");
+  }
 });
 
 test("une session refusee avertit au lieu d'accuser le portail d'avoir change", () => {

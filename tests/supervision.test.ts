@@ -139,3 +139,24 @@ test("la nature distingue ce que le statut confond", () => {
   assert.equal(natureDe(new Error("boum")), "inconnue");
   assert.equal(natureDe(undefined), "inconnue");
 });
+
+test("les contextes nommes sont nettoyes comme le reste", () => {
+  // Seul champ libre que rien ne filtrait, et c'est precisement la que les
+  // signaux du cycle deposent un motif d'erreur brut.
+  const nettoye = nettoyerEvenement({
+    contexts: {
+      cycle: {
+        exemple: "adresse refusee : parent@exemple.fr",
+        parentIds: ["52067c06-11e3-4e94-bf6d-53ca1bcccd8c"],
+        familles: 1,
+        imbrique: { motif: "doublon sur paul@exemple.fr" },
+      },
+    },
+  });
+  const c = nettoye.contexts?.cycle as Record<string, unknown>;
+  assert.equal(c.exemple, "adresse refusee : [adresse]");
+  assert.deepEqual(c.imbrique, { motif: "doublon sur [adresse]" });
+  // Les valeurs non textuelles traversent intactes.
+  assert.equal(c.familles, 1);
+  assert.deepEqual(c.parentIds, ["52067c06-11e3-4e94-bf6d-53ca1bcccd8c"]);
+});

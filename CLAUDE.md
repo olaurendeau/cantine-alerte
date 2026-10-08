@@ -115,6 +115,12 @@ Deux hôtes distincts coopèrent : `connect1.3douest.com` (SSO Laravel) et
    `location` **et** l'URL. Le verdict se prend sur la présence d'un JWT dont l'`iss` vaut
    `"3douest-auth-server"`. Absence = identifiants refusés, throttling, ou appareil de confiance.
    `419` = session/CSRF invalide côté Laravel.
+   ⚠️ **`refuserSiIndisponible()` ne passe qu'APRÈS ce verdict, et seulement si le portail n'a rien
+   dit.** Classer sur le statut d'abord ferait mentir la phrase en gras ci-dessus : un `403` serait
+   lu comme une panne passagère alors qu'un bloc `role="alert"` prouve que le portail a *traité* les
+   identifiants — donc qu'il les refuse. Le compte ne serait jamais désactivé et le parent lirait
+   indéfiniment « vos identifiants ne sont pas en cause ». Sans message du portail, à l'inverse, un
+   `401`/`403` vient d'un pare-feu : `ErreurTemporaire`, et aucun compte valide n'est suspendu.
 4. `POST /api/login` avec ce token → Bearer applicatif utilisé pour toute la suite.
 
 En cas d'échec, `messagesErreur()` remonte le message du portail lui-même (ex. « Mauvais email et/ou
@@ -537,9 +543,19 @@ dans deux endroits que personne ne consulte un mardi soir.
 - ⚠️ **Tout `echec_technique` doit porter une `nature`.** Le filet de dernière instance de
   `executerCron` en posait un sans : `signauxDe` n'émettait alors **rien**, l'échec était compté
   dans `parStatut` et aucune alerte ne partait — tout un pan de pannes silencieux, ce que la
-  supervision existe justement pour empêcher. Il pose maintenant `"inconnue"`, qui a son propre
-  signal `erreur-non-rattrapee` en `error`. Ce chemin court-circuite `alerter()`, donc le parent ne
-  reçoit même pas de mail d'échec technique : raison de plus pour que ça sonne.
+  supervision existe justement pour empêcher.
+  ⚠️ **`cycle` et `inconnue` ne sont pas synonymes.** `cycle` sort du filet de dernière instance,
+  qui court-circuite `alerter()` : la famille n'a **rien** reçu → `erreur-non-rattrapee`, en
+  `error`. `inconnue` sort du `catch` de `traiterParent`, qui a bien alerté le parent (un `419`
+  Laravel lève une `Error` nue et atterrit là) → `erreur-non-classee`, en `warning`. Les confondre
+  envoie chercher un bug de boucle là où le parent est déjà au courant.
+- ⚠️ **Une indisponibilité qui dure est escaladée en `error`, sous une empreinte distincte.**
+  `echecsConsecutifs` est porté par `ResultatParent` pour ça : c'est la **seule** mesure de « est-ce
+  que ça dure ». Sans elle, une panne permanente — clé de tenant révoquée, point d'entrée passé
+  derrière un nouveau scope — se contenterait d'un `warning` quotidien, noyé dans la même issue que
+  les coupures de cinq minutes, pendant que toutes les familles perdent tous leurs rappels. Le seuil
+  (3 cycles, ~1,5 jour) reprend le raisonnement de `SEUIL_DESACTIVATION` sans s'y confondre : deux
+  décisions distinctes, deux constantes.
 - **`/api/cron` rend aussi un décompte `parNature`.** `echec_technique` recouvre « le portail a
   changé » et « le portail a hoqueté » ; sans ce décompte, le journal public — le seul lisible sans
   accès à Vercel ni à Sentry — ne permet pas de les distinguer, et c'est un aller-retour perdu à

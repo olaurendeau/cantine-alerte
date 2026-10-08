@@ -28,7 +28,7 @@ Sentry sert à les faire **venir à nous**.
 | 3 | **Pas de Session Replay.** Il filmerait l'écran du parent, prénoms d'enfants compris. |
 | 4 | **`parent_id` seul**, jamais d'adresse ni de prénom. Les query strings sont supprimées avant envoi. |
 | 5 | **Sentry ne rentre pas dans `lib/`.** C'est de l'infrastructure de plateforme : elle vit dans `app/` et dans les fichiers `instrumentation*`. |
-| 6 | **Filtrage agressif à la source.** `ErreurIdentifiants` et les `429` ne partent jamais : une alerte qu'on apprend à ignorer ne sert plus à rien. |
+| 6 | **Filtrage agressif à la source.** `ErreurIdentifiants` ne part jamais : une alerte qu'on apprend à ignorer ne sert plus à rien. (Révisé : un `429` remonte bien en `warning` — `aIgnorer` agit dans `beforeSend` sur l'exception d'origine, or les signaux du cycle sont des `captureMessage` sans exception. C'est souhaitable : un throttling dit que le service s'est fait freiner.) |
 | 7 | **Pas de DSN, pas de SDK.** Le service tourne à l'identique sans Sentry, en local comme en Docker. |
 
 ## Ce qui part, et ce qui ne part pas
@@ -47,8 +47,8 @@ apprend à ne plus lire les alertes, et la vraie panne passe avec les autres.
 | `surveillancesAbsentes` | **warning** | Une prestation surveillée n'existe pas : silence invisible. |
 | `etatsNonRepertories` | **warning** | Nouvel état à classer (« Pré-réservé », « En attente et bloqué »). |
 | `echec_envoi` | **warning** | Le verrou est libéré, le rejeu du soir retentera. |
-| `ErreurTemporaire` 5xx | **warning**, agrégé | Panne passagère du portail. Une par famille serait du bruit. |
-| `ErreurTemporaire` 429 | **rien** | Throttling attendu, que le service évite déjà par construction. |
+| `ErreurTemporaire` passagère | **warning**, agrégé | 5xx, 401/403, 429. Une par famille serait du bruit. |
+| `ErreurTemporaire` qui dure | **error** | ≥ 3 cycles d'affilée : ce n'est plus un hoquet, empreinte distincte. |
 | `ErreurIdentifiants` | **rien** | Le parent a changé son mot de passe. Le service le désactive et lui écrit : c'est le fonctionnement normal. |
 
 ⚠️ **`statut` seul ne suffit pas à trancher.** `ErreurStructure` et `ErreurTemporaire` tombent toutes
