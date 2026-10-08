@@ -223,16 +223,18 @@ export async function login(
     // un compte parfaitement valide au bout de trois cycles — exactement ce que
     // le service s'interdit — sans aucun signal, `aIgnorer` ecartant les
     // identifiants refuses.
-    // ⚠️ On balaie TOUTE la chaine, pas seulement la premiere reponse.
-    // `goSuivi` suit les 302 : quand le POST redirige et que c'est le GET
-    // suivant qui tombe — mise en production cote portail, ou notre propre
-    // throttling par IP — la panne est dans le dernier maillon et
-    // `premiere.status` vaut 302. Aucun garde ne la verrait, et le compte
-    // serait desactive pour une panne qui n'a rien a voir avec le parent.
-    // Un tel maillon est forcement le dernier, `goSuivi` ne suivant que les 3xx.
-    const panne = etapes.find((e) => e.res.status === 429 || e.res.status >= 500);
-    if (panne) {
-      refuserSiIndisponible(panne.res.status, "la soumission des identifiants");
+    // ⚠️ C'est le DERNIER maillon qui porte le statut operant, pas le premier.
+    // `goSuivi` ne suit que les 3xx : une panne comme un refus TERMINE donc la
+    // chaine. Quand le POST redirige et que c'est le GET suivi qui tombe — mise
+    // en production cote portail, pare-feu qui bloque, ou notre propre
+    // throttling par IP — `premiere.status` vaut 302 et ne dit rien. Lire le
+    // premier maillon desactiverait un compte valide pour une panne qui n'a
+    // rien a voir avec le parent. Une seule notion pour les deux gardes
+    // ci-dessous, sans quoi l'un couvre la chaine et l'autre pas.
+    const statutOperant = etapes[etapes.length - 1].res.status;
+
+    if (statutOperant === 429 || statutOperant >= 500) {
+      refuserSiIndisponible(statutOperant, "la soumission des identifiants");
     }
 
     const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));
@@ -249,10 +251,10 @@ export async function login(
     // refus, pas une panne. Sans cette preuve, un 401/403 vient d'un pare-feu
     // et reste temporaire — aucun compte valide n'est suspendu.
     if (!(erreurs.length > 0 && formulaireRendu)) {
-      refuserSiIndisponible(premiere.status, "la soumission des identifiants");
+      refuserSiIndisponible(statutOperant, "la soumission des identifiants");
     }
     throw new ErreurIdentifiants(
-      `Connexion refusee (HTTP ${premiere.status}) : identifiants invalides, ` +
+      `Connexion refusee (HTTP ${statutOperant}) : identifiants invalides, ` +
         "throttling, ou verification d'appareil de confiance active.",
       erreurs[0] ?? null,
     );

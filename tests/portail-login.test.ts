@@ -149,6 +149,19 @@ test("une panne qui tombe apres la redirection reste une panne", async () => {
   }
 });
 
+test("un pare-feu qui bloque apres la redirection ne desactive pas un compte", async () => {
+  // Meme page de pare-feu que plus haut, arrivee un maillon plus loin :
+  // Cloudflare en bot-fight mode, ou un proxy qui refuse le GET suivi. Lire le
+  // premier maillon verrait un 302, que rien ne classe, et le refus
+  // d'identifiants suspendrait un compte parfaitement valide — en silence.
+  for (const statut of [401, 403]) {
+    await assert.rejects(
+      () => login(config(), sessionEnChaine(statut, CLOUDFLARE)),
+      (e: unknown) => e instanceof ErreurTemporaire && (e as ErreurTemporaire).statut === statut,
+    );
+  }
+});
+
 test("un refus suivi d'une redirection reste un refus", async () => {
   // Le cas nominal reel : le portail repond 302 vers /connexion, et la page
   // suivie porte le formulaire re-rendu avec son message.
