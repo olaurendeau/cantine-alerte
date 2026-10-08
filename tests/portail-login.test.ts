@@ -67,6 +67,26 @@ function sessionJusquAuSaut3(statut: number, corps: string): Session {
   return { go, goSuivi } as unknown as Session;
 }
 
+/**
+ * Une chaine : le POST redirige, et c'est le maillon suivi qui repond.
+ *
+ * `goSuivi` suit les 302, donc la panne peut tomber ailleurs que sur la
+ * premiere reponse — et un garde qui ne regarde que celle-ci la manquerait.
+ */
+function sessionEnChaine(statutFinal: number, corpsFinal: string): Session {
+  const go = async (url: string) => {
+    if (url.includes("/api/redirecturi")) {
+      return reponse(200, `{"token":"${jwt("3douestcantineserver")}"}`);
+    }
+    return reponse(200, FORMULAIRE);
+  };
+  const goSuivi = async (url: string) => [
+    { url, res: reponse(302, ""), texte: "" },
+    { url: `${url}?suivi`, res: reponse(statutFinal, corpsFinal), texte: corpsFinal },
+  ];
+  return { go, goSuivi } as unknown as Session;
+}
+
 test("un 429 au saut 3 reste une panne, meme derriere une page d'erreur", async () => {
   // LE cas qui compte. Le throttling du portail est par adresse IP : « trois
   // connexions ratees d'affilee ont fait retourner un 429 au compte suivant,
@@ -112,6 +132,31 @@ test("un refus exprime en 403 reste un refus", async () => {
   await assert.rejects(
     () => login(config(), sessionJusquAuSaut3(403, REFUS)),
     (e: unknown) => e instanceof ErreurIdentifiants,
+  );
+});
+
+test("une panne qui tombe apres la redirection reste une panne", async () => {
+  // Le POST repond 302, `goSuivi` suit, et c'est le GET suivant qui echoue —
+  // mise en production cote portail, ou notre propre throttling par IP. Un
+  // garde qui ne regarderait que la premiere reponse verrait un 302 et
+  // classerait la panne en refus d'identifiants : compte valide desactive au
+  // bout de trois cycles, et sans aucune alerte.
+  for (const statut of [429, 503]) {
+    await assert.rejects(
+      () => login(config(), sessionEnChaine(statut, CLOUDFLARE)),
+      (e: unknown) => e instanceof ErreurTemporaire && (e as ErreurTemporaire).statut === statut,
+    );
+  }
+});
+
+test("un refus suivi d'une redirection reste un refus", async () => {
+  // Le cas nominal reel : le portail repond 302 vers /connexion, et la page
+  // suivie porte le formulaire re-rendu avec son message.
+  await assert.rejects(
+    () => login(config(), sessionEnChaine(200, REFUS)),
+    (e: unknown) =>
+      e instanceof ErreurIdentifiants &&
+      (e as ErreurIdentifiants).messagePortail === "Mauvais email et/ou mot de passe.",
   );
 });
 

@@ -67,7 +67,13 @@ function signalDePanne(
 ): Signal {
   const durables = parents.filter((t) => (t.echecsConsecutifs ?? 0) >= SEUIL_PANNE_DURABLE);
   const duree = Math.max(0, ...durables.map((t) => t.echecsConsecutifs ?? 0));
-  const total = durables.length > 0 && durables.length === interroges;
+  // ⚠️ `interroges > 1` n'est pas une coquetterie : avec une seule famille
+  // interrogee — cas courant, une famille cantine seule n'est vue que son jour
+  // de rappel — « toutes » vaudrait une, et la famille chroniquement refusee
+  // ouvrirait l'issue `-total` a elle seule. La vraie panne generale y
+  // arriverait ensuite sans declencher de notification : l'auto-masquage que
+  // cette bascule existe pour empecher, revenu par le cas limite.
+  const total = durables.length === interroges && interroges > 1;
 
   if (durables.length === 0) {
     return {
@@ -94,9 +100,16 @@ function signalDePanne(
   };
 }
 
-/** Le motif d'erreur d'une nature, assaini, ou une chaine vide s'il n'y en a pas. */
-const exempleDe = (resultat: ResultatCron, nature: string): string =>
-  sansAdresses(resultat.traites.find((t) => t.nature === nature && t.detail)?.detail ?? "");
+/**
+ * Le motif d'erreur d'une nature, assaini — ou rien du tout.
+ *
+ * Rend un fragment a etaler plutot qu'une chaine : « exemple: "" » dans une
+ * issue se lit comme « motif perdu », pas comme « pas de motif ».
+ */
+function exemple(resultat: ResultatCron, nature: string): { exemple?: string } {
+  const detail = resultat.traites.find((t) => t.nature === nature && t.detail)?.detail;
+  return detail ? { exemple: sansAdresses(detail) } : {};
+}
 
 /** Les valeurs distinctes d'un champ liste, tous parents confondus. */
 function cumuler<T>(resultat: ResultatCron, champ: (t: ResultatCron["traites"][number]) => T[] | undefined): T[] {
@@ -108,7 +121,8 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
   const parentsDeNature = (nature: string) =>
     resultat.traites.filter((t) => t.nature === nature).map((t) => t.parentId);
 
-  // — error : un rappel est perdu, ou le sera demain —
+  // — ce qui fait perdre un rappel. Niveau `error`, sauf les pannes qui
+  //   peuvent n'etre que passageres : elles montent avec leur obstination. —
 
   if (resultat.nonTraites > 0) {
     signaux.push({
@@ -151,7 +165,7 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
         parentIds: structure,
         // Omis plutot que vide : « exemple: "" » dans une issue se lit comme
         // « motif perdu », pas comme « pas de motif ».
-        ...(exempleDe(resultat, "structure") ? { exemple: exempleDe(resultat, "structure") } : {}),
+        ...exemple(resultat, "structure"),
       },
     });
   }
@@ -169,9 +183,7 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
       contexte: {
         familles: horsCycle.length,
         parentIds: horsCycle,
-        // Omis plutot que vide : « exemple: "" » dans une issue se lit comme
-        // « motif perdu », pas comme « pas de motif ».
-        ...(exempleDe(resultat, "cycle") ? { exemple: exempleDe(resultat, "cycle") } : {}),
+        ...exemple(resultat, "cycle"),
       },
     });
   }
@@ -188,14 +200,14 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
     // rappels de toutes les familles pour un warning quotidien.
     const lot = resultat.traites.filter((t) => t.nature === "inconnue");
     const signal = signalDePanne(lot, resultat.interroges, "erreur-non-classee", "Erreur non classee");
-    const exemple = sansAdresses(lot.find((t) => t.detail)?.detail ?? "");
     signaux.push({
       ...signal,
-      contexte: { ...signal.contexte, ...(exemple ? { exemple } : {}) },
+      contexte: { ...signal.contexte, ...exemple(resultat, "inconnue") },
     });
   }
 
-  // — warning : a regarder, sans reveiller personne —
+  // — ce qui merite un coup d'oeil sans reveiller personne, tant que ca ne
+  //   s'installe pas —
 
   const temporaires = resultat.traites.filter((t) => t.nature === "temporaire");
   if (temporaires.length) {

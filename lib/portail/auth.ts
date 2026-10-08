@@ -223,8 +223,16 @@ export async function login(
     // un compte parfaitement valide au bout de trois cycles — exactement ce que
     // le service s'interdit — sans aucun signal, `aIgnorer` ecartant les
     // identifiants refuses.
-    if (premiere.status === 429 || premiere.status >= 500) {
-      refuserSiIndisponible(premiere.status, "la soumission des identifiants");
+    // ⚠️ On balaie TOUTE la chaine, pas seulement la premiere reponse.
+    // `goSuivi` suit les 302 : quand le POST redirige et que c'est le GET
+    // suivant qui tombe — mise en production cote portail, ou notre propre
+    // throttling par IP — la panne est dans le dernier maillon et
+    // `premiere.status` vaut 302. Aucun garde ne la verrait, et le compte
+    // serait desactive pour une panne qui n'a rien a voir avec le parent.
+    // Un tel maillon est forcement le dernier, `goSuivi` ne suivant que les 3xx.
+    const panne = etapes.find((e) => e.res.status === 429 || e.res.status >= 500);
+    if (panne) {
+      refuserSiIndisponible(panne.res.status, "la soumission des identifiants");
     }
 
     const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));

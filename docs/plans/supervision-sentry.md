@@ -48,7 +48,7 @@ apprend à ne plus lire les alertes, et la vraie panne passe avec les autres.
 | `etatsNonRepertories` | **warning** | Nouvel état à classer (« Pré-réservé », « En attente et bloqué »). |
 | `echec_envoi` | **warning** | Le verrou est libéré, le rejeu du soir retentera. |
 | `ErreurTemporaire` passagère | **warning**, agrégé | 5xx, 401/403, 429. Une par famille serait du bruit. |
-| `ErreurTemporaire` qui dure | **error** | ≥ 3 cycles d'affilée : ce n'est plus un hoquet, empreinte distincte. |
+| Panne qui s'installe | **error** | ≥ 3 interrogations d'affilée, indisponibilité comme erreur non classée. Empreintes distinctes, dont `-total` quand toutes les familles interrogées sont touchées. |
 | `ErreurIdentifiants` | **rien** | Le parent a changé son mot de passe. Le service le désactive et lui écrit : c'est le fonctionnement normal. |
 
 ⚠️ **`statut` seul ne suffit pas à trancher.** `ErreurStructure` et `ErreurTemporaire` tombent toutes
