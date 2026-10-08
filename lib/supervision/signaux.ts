@@ -1,3 +1,4 @@
+import { sansAdresses } from "./anonymiser.ts";
 import type { ResultatCron } from "../service/verification.ts";
 
 /**
@@ -16,6 +17,22 @@ import type { ResultatCron } from "../service/verification.ts";
  */
 export type NiveauSignal = "error" | "warning";
 
+/**
+ * Au-dela de ce nombre d'INTERROGATIONS consecutives en echec, une
+ * indisponibilite n'est plus passagere.
+ *
+ * ⚠️ Des interrogations, pas des jours. Une famille qui a active le
+ * periscolaire est vue deux fois par jour, donc trois echecs couvrent environ
+ * un jour et demi ; une famille cantine seule avec un unique jour de rappel
+ * n'est vue que ce jour-la, et les memes trois echecs s'etalent sur pres de
+ * huit jours. Le compteur mesure l'obstination de la panne, pas sa duree.
+ *
+ * Volontairement aligne sur le seuil de desactivation d'un compte, qui repose
+ * sur le meme raisonnement : trois fois d'affilee, ce n'est plus un accident.
+ * Ce sont deux decisions distinctes, d'ou deux constantes.
+ */
+const SEUIL_PANNE_DURABLE = 3;
+
 export type Signal = {
   /** Empreinte stable : une issue par type de signal, jamais une par libelle. */
   empreinte: string;
@@ -24,6 +41,75 @@ export type Signal = {
   /** Pseudonymes et decomptes uniquement : ni adresse, ni prenom. */
   contexte: Record<string, unknown>;
 };
+
+/**
+ * Le signal d'une panne qui peut s'installer, escalade si elle dure.
+ *
+ * ⚠️ On compte les familles DURABLES a part, au lieu de prendre le maximum des
+ * compteurs : un 401/403 ne desactive jamais un compte (par conception), donc
+ * une famille chroniquement refusee — compte supprime cote collectivite,
+ * adresse portail obsolete — verrait son compteur croitre sans borne et
+ * escaladerait a elle seule le signal de tout le cycle, a chaque passage et
+ * pour toujours. Le message melangerait alors deux echelles : « depuis 47
+ * cycles pour 12 familles », ou 47 est le compteur d'UNE famille et 12 le
+ * total. C'est le chiffre sur lequel on decide s'il faut se lever la nuit.
+ *
+ * ⚠️ L'empreinte distingue aussi « tout le cycle » d'« une famille qui traine ».
+ * Sans ca, la famille chronique garde l'issue ouverte en permanence, et la
+ * vraie panne totale y arrive plus tard sans declencher la moindre
+ * notification : l'escalade se masquerait elle-meme.
+ */
+function signalDePanne(
+  parents: ResultatCron["traites"],
+  interroges: number,
+  base: string,
+  libelle: string,
+): Signal {
+  const durables = parents.filter((t) => (t.echecsConsecutifs ?? 0) >= SEUIL_PANNE_DURABLE);
+  const duree = Math.max(0, ...durables.map((t) => t.echecsConsecutifs ?? 0));
+  // ⚠️ `interroges > 1` n'est pas une coquetterie : avec une seule famille
+  // interrogee — cas courant, une famille cantine seule n'est vue que son jour
+  // de rappel — « toutes » vaudrait une, et la famille chroniquement refusee
+  // ouvrirait l'issue `-total` a elle seule. La vraie panne generale y
+  // arriverait ensuite sans declencher de notification : l'auto-masquage que
+  // cette bascule existe pour empecher, revenu par le cas limite.
+  const total = durables.length === interroges && interroges > 1;
+
+  if (durables.length === 0) {
+    return {
+      empreinte: base,
+      niveau: "warning",
+      message: `${libelle} pour ${parents.length} famille(s)`,
+      contexte: { familles: parents.length, parentIds: parents.map((t) => t.parentId) },
+    };
+  }
+  return {
+    empreinte: total ? `${base}-total` : `${base}-durable`,
+    niveau: "error",
+    message:
+      `${libelle} depuis ${duree} interrogations pour ${durables.length} famille(s)` +
+      (total ? " — TOUTES celles interrogees" : ` sur ${parents.length} en echec`) +
+      " : ce n'est plus passager",
+    contexte: {
+      familles: parents.length,
+      durables: durables.length,
+      interroges,
+      echecsConsecutifs: duree,
+      parentIds: durables.map((t) => t.parentId),
+    },
+  };
+}
+
+/**
+ * Le motif d'erreur d'une nature, assaini — ou rien du tout.
+ *
+ * Rend un fragment a etaler plutot qu'une chaine : « exemple: "" » dans une
+ * issue se lit comme « motif perdu », pas comme « pas de motif ».
+ */
+function exemple(resultat: ResultatCron, nature: string): { exemple?: string } {
+  const detail = resultat.traites.find((t) => t.nature === nature && t.detail)?.detail;
+  return detail ? { exemple: sansAdresses(detail) } : {};
+}
 
 /** Les valeurs distinctes d'un champ liste, tous parents confondus. */
 function cumuler<T>(resultat: ResultatCron, champ: (t: ResultatCron["traites"][number]) => T[] | undefined): T[] {
@@ -35,7 +121,8 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
   const parentsDeNature = (nature: string) =>
     resultat.traites.filter((t) => t.nature === nature).map((t) => t.parentId);
 
-  // — error : un rappel est perdu, ou le sera demain —
+  // — ce qui fait perdre un rappel. Niveau `error`, sauf les pannes qui
+  //   peuvent n'etre que passageres : elles montent avec leur obstination. —
 
   if (resultat.nonTraites > 0) {
     signaux.push({
@@ -76,23 +163,67 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
       contexte: {
         familles: structure.length,
         parentIds: structure,
-        exemple: resultat.traites.find((t) => t.nature === "structure")?.detail,
+        // Omis plutot que vide : « exemple: "" » dans une issue se lit comme
+        // « motif perdu », pas comme « pas de motif ».
+        ...exemple(resultat, "structure"),
       },
     });
   }
 
-  // — warning : a regarder, sans reveiller personne —
-
-  const temporaires = parentsDeNature("temporaire");
-  if (temporaires.length) {
-    // Les 429 n'arrivent jamais jusqu'ici : `aIgnorer` les ecarte a la source.
-    // Restent les 5xx, donc un portail reellement en panne.
+  const horsCycle = parentsDeNature("cycle");
+  if (horsCycle.length) {
+    // Le filet de derniere instance d'`executerCron` : une erreur a echappe a
+    // `traiterParent`. On ne sait pas ce que c'est, et c'est bien le probleme —
+    // ce chemin court-circuite `alerter()`, donc la famille n'a meme pas recu
+    // de mail d'echec technique.
     signaux.push({
-      empreinte: "portail-indisponible",
-      niveau: "warning",
-      message: `Portail indisponible pour ${temporaires.length} famille(s)`,
-      contexte: { familles: temporaires.length, parentIds: temporaires },
+      empreinte: "erreur-non-rattrapee",
+      niveau: "error",
+      message: `Erreur non rattrapee dans le cycle pour ${horsCycle.length} famille(s)`,
+      contexte: {
+        familles: horsCycle.length,
+        parentIds: horsCycle,
+        ...exemple(resultat, "cycle"),
+      },
     });
+  }
+
+  const inattendues = parentsDeNature("inconnue");
+  if (inattendues.length) {
+    // Erreur non classee sortie du `catch` de `traiterParent` — un 419 Laravel,
+    // par exemple, qui leve une Error nue. ⚠️ Contrairement au cas ci-dessus,
+    // `alerter()` a bien tourne : le parent a ete prevenu. Les confondre
+    // enverrait chercher un bug de boucle la ou le parent est au courant.
+    // ⚠️ Escalade comme une indisponibilite : un 419 au saut 3 atterrit ici, et
+    // c'est precisement la gestion des cookies/CSRF que le projet designe comme
+    // la plus susceptible de casser. Permanente, elle ferait perdre tous les
+    // rappels de toutes les familles pour un warning quotidien.
+    const lot = resultat.traites.filter((t) => t.nature === "inconnue");
+    const signal = signalDePanne(lot, resultat.interroges, "erreur-non-classee", "Erreur non classee");
+    signaux.push({
+      ...signal,
+      contexte: { ...signal.contexte, ...exemple(resultat, "inconnue") },
+    });
+  }
+
+  // — ce qui merite un coup d'oeil sans reveiller personne, tant que ca ne
+  //   s'installe pas —
+
+  const temporaires = resultat.traites.filter((t) => t.nature === "temporaire");
+  if (temporaires.length) {
+    // 429 (debit limite), 401/403 (session refusee) et 5xx (portail en panne).
+    // ⚠️ `aIgnorer` ne les ecarte PAS ici : il s'applique dans `beforeSend` sur
+    // l'exception d'origine, or ces signaux sont des `captureMessage` sans
+    // exception. Un throttling remonte donc bien, ce qui est souhaitable — il
+    // dit que le service s'est fait freiner.
+    // ⚠️ Au-dela du seuil, ce n'est plus un hoquet. Sans cette escalade, une
+    // panne PERMANENTE — cle de tenant revoquee, point d'entree passe derriere
+    // un nouveau scope — se contenterait d'un warning quotidien, noye dans la
+    // meme issue que les coupures de cinq minutes, pendant que toutes les
+    // familles perdent tous leurs rappels.
+    signaux.push(
+      signalDePanne(temporaires, resultat.interroges, "portail-indisponible", "Portail indisponible"),
+    );
   }
 
   const echecsEnvoi = resultat.traites.filter((t) => t.statut === "echec_envoi");

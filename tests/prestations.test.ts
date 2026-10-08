@@ -458,11 +458,22 @@ test("un 5xx sur les prestations est temporaire et merite un nouvel essai", asyn
 });
 
 test("un statut inattendu sur les prestations n'est pas rejoue", async () => {
-  // 401, 403, 404 rendront la meme chose au coup suivant, et chaque tentative
-  // refait les quatre sauts de connexion : trois essais coutent douze requetes
-  // depuis la meme IP pour rien, ce qui pousse vers le 429 qu'on evite.
+  // La propriete qui compte n'a pas bouge : chaque tentative refait les quatre
+  // sauts de connexion, trois essais coutent douze requetes depuis la meme IP
+  // et poussent vers le 429 qu'on evite. Seule la CLASSE change selon le statut.
+  //
+  // 401 / 403 : la session est refusee, le plus souvent passagerement.
   await assert.rejects(
     () => getPrestations(config(), sessionQuiRepond(401, "non autorise"), "b", lundi, dimanche),
+    (e: unknown) => {
+      assert.ok(e instanceof ErreurTemporaire);
+      assert.ok(nePasRejouer(e));
+      return true;
+    },
+  );
+  // 404 : le point d'entree a disparu, c'est bien l'API qui a change.
+  await assert.rejects(
+    () => getPrestations(config(), sessionQuiRepond(404, "introuvable"), "b", lundi, dimanche),
     (e: unknown) => {
       assert.ok(e instanceof ErreurStructure);
       assert.ok(nePasRejouer(e));

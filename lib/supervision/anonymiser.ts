@@ -80,7 +80,38 @@ export type EvenementNettoyable = {
   breadcrumbs?: { message?: string; data?: { url?: string } & Record<string, unknown> }[];
   exception?: { values?: { value?: string }[] };
   user?: { id?: string; email?: string; ip_address?: string; username?: string };
+  /**
+   * Les contextes nommes (`setContext`). Chaque valeur est libre, et c'est la
+   * ou atterrissent les motifs d'erreur bruts des signaux du cycle.
+   */
+  contexts?: Record<string, Record<string, unknown> | undefined>;
 };
+
+/**
+ * Les adresses masquees partout dans une valeur de contexte, quelle qu'en soit
+ * la forme.
+ *
+ * ⚠️ La profondeur est bornee, et ce n'est pas de la prudence decorative : on
+ * tourne ici dans `beforeSend`, sur des contextes dont le SDK remplit une
+ * partie (`trace`, `runtime`, `os`). Une structure circulaire ferait boucler
+ * l'envoi — et une boucle n'est pas une exception, donc rien ne la rattraperait.
+ * Au-dela de la limite on rend la valeur telle quelle plutot que de la perdre :
+ * aucun de nos contextes n'approche cette profondeur.
+ */
+function valeurNettoyee(valeur: unknown, profondeur = 0): unknown {
+  if (typeof valeur === "string") return sansAdresses(valeur);
+  if (profondeur >= 6) return valeur;
+  if (Array.isArray(valeur)) return valeur.map((v) => valeurNettoyee(v, profondeur + 1));
+  if (valeur && typeof valeur === "object") {
+    return Object.fromEntries(
+      Object.entries(valeur as Record<string, unknown>).map(([c, v]) => [
+        c,
+        valeurNettoyee(v, profondeur + 1),
+      ]),
+    );
+  }
+  return valeur;
+}
 
 /**
  * L'evenement tel qu'il peut partir.
@@ -112,6 +143,16 @@ export function nettoyerEvenement<T extends EvenementNettoyable>(evenement: T): 
 
   for (const valeur of exception?.values ?? []) {
     if (valeur.value) valeur.value = sansAdresses(valeur.value);
+  }
+
+  // ⚠️ Les contextes etaient le seul champ libre que rien ne filtrait, alors
+  // que c'est precisement la que les signaux du cycle deposent un motif
+  // d'erreur brut (`exemple`) — lequel vient du portail ou de Brevo, qui citent
+  // volontiers l'adresse. Les appelants assainissent deja a la source ; ce
+  // passage est la ceinture, pour que le prochain contexte ajoute soit couvert
+  // sans qu'on y pense.
+  if (evenement.contexts) {
+    evenement.contexts = valeurNettoyee(evenement.contexts) as typeof evenement.contexts;
   }
 
   // `setUser` ne pose qu'un id, mais le SDK complete avec l'IP quand il la

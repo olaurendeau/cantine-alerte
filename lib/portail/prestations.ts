@@ -83,13 +83,15 @@ export async function getPrestations(
     body: JSON.stringify({ type_pointage: "R", date_start: iso(debut), date_end: iso(fin) }),
   });
   const txt = await res.text();
-  // Meme classification qu'a la connexion : un 429 ne doit pas etre rejoue
-  // (insister prolonge le blocage par IP), un 5xx merite un nouvel essai.
+  // Meme classification qu'a la connexion : 429, 401 et 403 ne doivent pas etre
+  // rejoues (insister prolonge le blocage par IP, ou ne change rien), un 5xx
+  // merite un nouvel essai.
   refuserSiIndisponible(res.status, "la lecture des prestations");
   if (!res.ok) {
-    // Tout le reste (401, 403, 404) rendra la meme chose au coup suivant, et
-    // chaque tentative refait les quatre sauts de connexion : trois essais
-    // coutent douze requetes depuis la meme IP pour rien, ce qui pousse
+    // Ne reste ici que le 404 et les statuts exotiques : le point d'entree a
+    // disparu ou a change de contrat, et la reponse sera identique au coup
+    // suivant. Chaque tentative refait les quatre sauts de connexion : trois
+    // essais coutent douze requetes depuis la meme IP pour rien, ce qui pousse
     // justement vers le 429 qu'on s'applique a eviter.
     throw new ErreurStructure(
       `prestations HTTP ${res.status}, statut inattendu : ${txt.slice(0, 300)}`,

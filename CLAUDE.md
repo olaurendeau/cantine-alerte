@@ -115,6 +115,16 @@ Deux hôtes distincts coopèrent : `connect1.3douest.com` (SSO Laravel) et
    `location` **et** l'URL. Le verdict se prend sur la présence d'un JWT dont l'`iss` vaut
    `"3douest-auth-server"`. Absence = identifiants refusés, throttling, ou appareil de confiance.
    `419` = session/CSRF invalide côté Laravel.
+   ⚠️ **Au saut 3 l'ordre de classement est particulier, et il tient en deux temps.** D'abord
+   `429` et `5xx` sont écartés **inconditionnellement**, sur *toute* la chaîne suivie et non sur la
+   seule première réponse — `goSuivi` suit les `302`, la panne peut tomber sur le maillon suivant.
+   Ensuite seulement le verdict se prend, et le statut ne décide plus de rien **si et seulement si**
+   le portail a vraiment traité la demande. ⚠️ **La preuve n'est pas un bloc `role="alert"`** : les
+   pages des pare-feu en portent, et les prendre pour la parole du portail ferait d'un throttling un
+   refus d'identifiants — donc désactiverait un compte valide, en silence. La preuve est que
+   **Laravel ait re-rendu son formulaire** (`champCache(_token)`), ce qu'un intermédiaire ne fait
+   pas. Ainsi un `403` accompagné du formulaire et de son message reste un refus, et un `403` de
+   pare-feu reste une panne. `tests/portail-login.test.ts` verrouille les deux sens.
 4. `POST /api/login` avec ce token → Bearer applicatif utilisé pour toute la suite.
 
 En cas d'échec, `messagesErreur()` remonte le message du portail lui-même (ex. « Mauvais email et/ou
@@ -381,17 +391,34 @@ Points de conception qui ont une raison d'être :
   `ErreurTemporaire` distincte d'`ErreurIdentifiants`, (c) aucun réessai sur un `429` — insister
   prolonge le blocage. Le `429` est classé aux **deux** endroits qui interrogent le portail :
   `login` et `getPrestations`. ⚠️ Le classement se fait par `refuserSiIndisponible()`, appelé
-  **avant toute lecture de la réponse**, aux quatre sauts de connexion comme sur les prestations.
-  L'ordre n'est pas cosmétique : une page d'erreur 502 ne contient aucun JWT, ce qui se lisait
-  sinon comme un changement de HTML — donc une `ErreurStructure`, jamais rejouée — et transformait
-  un hoquet passager du portail en rappel perdu pour la journée.
+  **avant toute lecture de la réponse** — partout **sauf au saut 3**, cf. ci-dessus. L'ordre n'est
+  pas cosmétique : une page d'erreur 502 ne contient aucun JWT, ce qui se lisait sinon comme un
+  changement de HTML — donc une `ErreurStructure`, jamais rejouée — et transformait un hoquet
+  passager du portail en rappel perdu pour la journée.
+  ⚠️ **Au saut 3, un `429` et un `5xx` sont classés inconditionnellement, avant même de chercher un
+  message du portail.** Les pages des pare-feu (Cloudflare : `cf-error-details`, `cf-alert-error`)
+  portent des classes que `messagesErreur()` reconnaît : les prendre pour la parole du portail
+  ferait d'un throttling un refus d'identifiants, donc **désactiverait un compte parfaitement
+  valide** au bout de trois cycles — et en silence, `aIgnorer` écartant les identifiants refusés.
+  La preuve que le portail a vraiment traité la demande n'est pas qu'une page comporte un bloc
+  d'erreur, mais que **Laravel ait re-rendu son formulaire de connexion** (`champCache(_token)`).
+  `tests/portail-login.test.ts` verrouille les deux sens.
 - **Trois familles d'erreurs, trois politiques de réessai** (`nePasRejouer`, `lib/reessayer.ts`) :
   `ErreurIdentifiants` (jamais rejouée — insister ferait verrouiller le compte), `ErreurTemporaire`
-  (rejouée sur 5xx, jamais sur 429), `ErreurStructure` (jamais rejouée). Cette dernière couvre tout
+  (**rejouée sur 5xx seulement**), `ErreurStructure` (jamais rejouée). Cette dernière couvre tout
   ce qui relève du parsing : champ caché absent, JSON illisible, `data.pointages` manquant, aucune
-  prestation correspondante — plus les statuts inattendus sur un point d'entrée documenté (401,
-  403, 404). La réponse sera identique au coup suivant, et chaque tentative refait les quatre sauts
-  de connexion — donc pousse vers le `429` qu'on s'applique à éviter.
+  prestation correspondante — plus un **404** sur un point d'entrée documenté, qui dit bien que
+  l'API a changé. La réponse sera identique au coup suivant, et chaque tentative refait les quatre
+  sauts de connexion — donc pousse vers le `429` qu'on s'applique à éviter.
+  ⚠️ **401 et 403 sont `ErreurTemporaire`, pas `ErreurStructure`.** Ils y étaient au titre du
+  « statut inattendu », et le 2026-10-08 l'a démenti : une panne qui ne se reproduisait plus huit
+  heures après avait levé une alerte « le portail a changé » réclamant de reprendre le parsing. Un
+  refus sur une session qu'on vient de créer dit bien plus souvent « réessaie » que « l'API a
+  changé ». ⚠️ Temporaire ne veut **pas** dire rejouée : `nePasRejouer` écarte toute
+  `ErreurTemporaire` sous 500, 429 compris. `reessayer` enveloppe `verifierParent` **en entier**,
+  donc trois tentatives valent trois connexions complètes depuis la même IP — exactement le motif
+  qui a déjà fait tomber un `429` sur le compte suivant. Ce qui rejoue, c'est le cycle, qui passe
+  deux fois par jour.
 - **Tous les appels sortants ont un délai maximal** (`AbortSignal.timeout`) : 15 s par requête vers
   le portail, 10 s vers Brevo. `fetch` attend indéfiniment par défaut ; le cycle est séquentiel dans
   une fonction plafonnée à 300 s, donc une seule connexion qui pend priverait de rappel toutes les
@@ -525,6 +552,40 @@ dans deux endroits que personne ne consulte un mardi soir.
   deux en `echec_technique`, alors que l'une veut dire « reprendre le parsing » et l'autre « ça
   remarchera seul ». D'où le champ `nature` sur `ResultatParent` — une **donnée**, pas un appel à
   Sentry, pour que `lib/` reste ignorant de la plateforme.
+- ⚠️ **Tout `echec_technique` doit porter une `nature`.** Le filet de dernière instance de
+  `executerCron` en posait un sans : `signauxDe` n'émettait alors **rien**, l'échec était compté
+  dans `parStatut` et aucune alerte ne partait — tout un pan de pannes silencieux, ce que la
+  supervision existe justement pour empêcher.
+  ⚠️ **`cycle` et `inconnue` ne sont pas synonymes.** `cycle` sort du filet de dernière instance,
+  qui court-circuite `alerter()` : la famille n'a **rien** reçu → `erreur-non-rattrapee`, en
+  `error`. `inconnue` sort du `catch` de `traiterParent`, qui a bien alerté le parent (un `419`
+  Laravel lève une `Error` nue et atterrit là) → `erreur-non-classee`, en `warning` **tant que ça ne
+  s'installe pas** : elle escalade comme les indisponibilités, sans quoi un `419` permanent — la
+  gestion des cookies et du CSRF étant ce que ce projet désigne comme le plus susceptible de casser
+  — resterait un avertissement quotidien à vie. Les confondre envoie chercher un bug de boucle là
+  où le parent est déjà au courant.
+- ⚠️ **Une indisponibilité qui dure est escaladée en `error`, sous une empreinte distincte.**
+  `echecsConsecutifs` est porté par `ResultatParent` pour ça : c'est la **seule** mesure de « est-ce
+  que ça dure ». Sans elle, une panne permanente — clé de tenant révoquée, point d'entrée passé
+  derrière un nouveau scope — se contenterait d'un `warning` quotidien, noyé dans la même issue que
+  les coupures de cinq minutes, pendant que toutes les familles perdent tous leurs rappels. Le seuil
+  (3) reprend le raisonnement de `SEUIL_DESACTIVATION` sans s'y confondre : deux décisions
+  distinctes, deux constantes.
+  ⚠️ **Il compte des interrogations, pas des jours.** Une famille qui suit le périscolaire est vue
+  deux fois par jour, donc trois échecs couvrent ~1,5 jour ; une famille cantine seule avec un seul
+  jour de rappel n'est vue que ce jour-là, et les mêmes trois échecs s'étalent sur près de huit
+  jours. Le compteur mesure l'obstination de la panne, pas sa durée.
+  ⚠️ **Les familles durables sont comptées à part, jamais par un maximum global.** Un `401` ne
+  désactive jamais un compte : une famille durablement refusée — compte supprimé côté collectivité —
+  verrait son compteur croître sans borne et escaladerait à elle seule le signal de tout le cycle,
+  pour toujours. L'empreinte distingue pour la même raison `-durable` (quelques familles) de
+  `-total` (**toutes** celles interrogées, et au moins deux) : sans ça la famille chronique garde
+  l'issue ouverte, et la vraie panne générale y arrive plus tard sans déclencher la moindre
+  notification — l'escalade se masquerait elle-même.
+- **`/api/cron` rend aussi un décompte `parNature`.** `echec_technique` recouvre « le portail a
+  changé » et « le portail a hoqueté » ; sans ce décompte, le journal public — le seul lisible sans
+  accès à Vercel ni à Sentry — ne permet pas de les distinguer, et c'est un aller-retour perdu à
+  chaque incident. Des compteurs, donc rien de nominatif : la règle de §`/api/cron` tient.
 - **Une empreinte fixe par signal** (`setFingerprint`). Sans elle, deux libellés légèrement
   différents ouvriraient deux issues et la boîte grossirait jusqu'à ce qu'on cesse de la lire. Un
   type de signal = une issue, qui se rouvre quand le problème revient. `signauxDe()` est pure et

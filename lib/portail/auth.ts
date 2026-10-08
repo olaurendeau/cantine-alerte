@@ -46,8 +46,9 @@ export class ErreurTemporaire extends Error {
 
 /**
  * Le portail a repondu, mais pas ce qu'on sait lire : champ cache absent, JSON
- * illisible, structure du payload changee, statut inattendu sur un point
- * d'entree documente (401, 403, 404). Rejouer ne peut pas aider — la
+ * illisible, structure du payload changee, ou 404 sur un point d'entree
+ * documente — un point d'entree qui disparait, c'est bien l'API qui a change.
+ * ⚠️ 401 et 403 N'EN SONT PLUS : cf. `refuserSiIndisponible`. Rejouer ne peut pas aider — la
  * reponse sera identique — et chaque tentative refait les quatre sauts de
  * connexion, donc alimente le throttling par IP qu'on cherche justement a
  * eviter. Ces erreurs demandent une correction du parsing, pas de la patience.
@@ -61,12 +62,26 @@ export class ErreurStructure extends Error {
 
 /**
  * Statuts qui ne disent rien de la structure de la reponse : le portail limite
- * le debit, ou il est en panne.
+ * le debit, il refuse la session, ou il est en panne.
  *
- * A appeler avant toute tentative de lecture. Sans ce tri, un token absent ou
- * un corps illisible dus a une page d'erreur seraient pris pour un changement
- * de HTML — donc classes en ErreurStructure, que l'on ne rejoue jamais — et un
- * hoquet passager du portail couterait definitivement son rappel a la famille.
+ * A appeler avant toute tentative de lecture — sauf au saut 3, seul endroit ou
+ * un refus d'identifiants se juge, et ou l'ordre est donc inverse (cf. `login`).
+ * Sans ce tri, un token absent ou un corps illisible dus a une page d'erreur
+ * seraient pris pour un changement de HTML — donc classes en ErreurStructure,
+ * que l'on ne rejoue jamais — et un hoquet passager du portail couterait
+ * definitivement son rappel a la famille.
+ *
+ * ⚠️ **401 et 403 sont temporaires, pas structurels.** Ils etaient classes en
+ * ErreurStructure au titre du « statut inattendu sur un point d'entree
+ * documente ». Observe le 2026-10-08 : une panne qui ne se reproduisait plus
+ * huit heures apres avait leve une alerte « le portail a change » et reclamait
+ * de reprendre le parsing. Un refus d'authentification sur une session que l'on
+ * vient de creer dit bien plus souvent « reessaie » que « l'API a change » —
+ * ce dernier cas se presente en 404, qui reste structurel.
+ *
+ * Temporaire ne veut pas dire rejoue : cf. `nePasRejouer`, qui ne redonne sa
+ * chance qu'aux 5xx. Trois connexions d'affilee sont precisement ce qui
+ * declenche le throttling par IP.
  */
 export function refuserSiIndisponible(statut: number, etape: string): void {
   if (statut === 429) {
@@ -74,6 +89,13 @@ export function refuserSiIndisponible(statut: number, etape: string): void {
       "429 : le portail limite le debit (throttling par adresse IP). " +
         `Espacer les requetes et reessayer plus tard (${etape}).`,
       429,
+    );
+  }
+  if (statut === 401 || statut === 403) {
+    throw new ErreurTemporaire(
+      `Portail : session refusee sur ${etape} (HTTP ${statut}). ` +
+        "Transitoire le plus souvent ; si cela dure, le flux d'authentification a change.",
+      statut,
     );
   }
   if (statut >= 500) {
@@ -183,10 +205,6 @@ export async function login(
   if (premiere.status === 419) {
     throw new Error("419 : session ou CSRF invalide cote Laravel (cookies non transmis ?)");
   }
-  // Avant d'interpreter l'absence de token comme un refus, ecarter les cas ou
-  // le portail n'a tout simplement pas traite la demande.
-  refuserSiIndisponible(premiere.status, "la soumission des identifiants");
-
   // Le code HTTP ne distingue pas succes et echec : sur echec le portail
   // renvoie un 302 vers /connexion, donc un corps quasi vide. Le verdict se
   // prend sur la presence d'un JWT emis par le serveur d'authentification.
@@ -197,9 +215,46 @@ export async function login(
   ]);
   const auth = candidats.find((t) => jwtPayload(t).iss === "3douest-auth-server");
   if (!auth) {
+    // ⚠️ Un 429 ou un 5xx est une panne, QUOI QUE raconte la page servie.
+    // Ce garde est inconditionnel et doit le rester : les pages d'erreur des
+    // pare-feu (Cloudflare : `cf-error-details`, `cf-alert-error`) portent des
+    // classes que `messagesErreur` reconnait, et seraient donc prises pour un
+    // message du portail. Les laisser devenir ErreurIdentifiants desactiverait
+    // un compte parfaitement valide au bout de trois cycles — exactement ce que
+    // le service s'interdit — sans aucun signal, `aIgnorer` ecartant les
+    // identifiants refuses.
+    // ⚠️ C'est le DERNIER maillon qui porte le statut operant, pas le premier.
+    // `goSuivi` ne suit que les 3xx : une panne comme un refus TERMINE donc la
+    // chaine. Quand le POST redirige et que c'est le GET suivi qui tombe — mise
+    // en production cote portail, pare-feu qui bloque, ou notre propre
+    // throttling par IP — `premiere.status` vaut 302 et ne dit rien. Lire le
+    // premier maillon desactiverait un compte valide pour une panne qui n'a
+    // rien a voir avec le parent. Une seule notion pour les deux gardes
+    // ci-dessous, sans quoi l'un couvre la chaine et l'autre pas.
+    const statutOperant = etapes[etapes.length - 1].res.status;
+
+    if (statutOperant === 429 || statutOperant >= 500) {
+      refuserSiIndisponible(statutOperant, "la soumission des identifiants");
+    }
+
     const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));
+    // Le portail a-t-il vraiment traite la demande ? La preuve n'est pas qu'une
+    // page comporte un bloc d'erreur — n'importe quel intermediaire en sert —
+    // mais que LARAVEL ait re-rendu son formulaire de connexion, CSRF compris.
+    // C'est ce que fait le portail sur un refus : 302 vers /connexion, suivi
+    // par goSuivi, qui ramene le formulaire portant le message.
+    const formulaireRendu = etapes.some((e) => champCache(e.texte, "_token") !== null);
+
+    // Ce n'est qu'a cette condition que le statut ne decide de rien, ce qui
+    // preserve la regle « la discrimination succes/echec ne se fait pas sur le
+    // code HTTP » : un 403 accompagne du formulaire et de son message est un
+    // refus, pas une panne. Sans cette preuve, un 401/403 vient d'un pare-feu
+    // et reste temporaire — aucun compte valide n'est suspendu.
+    if (!(erreurs.length > 0 && formulaireRendu)) {
+      refuserSiIndisponible(statutOperant, "la soumission des identifiants");
+    }
     throw new ErreurIdentifiants(
-      `Connexion refusee (HTTP ${premiere.status}) : identifiants invalides, ` +
+      `Connexion refusee (HTTP ${statutOperant}) : identifiants invalides, ` +
         "throttling, ou verification d'appareil de confiance active.",
       erreurs[0] ?? null,
     );

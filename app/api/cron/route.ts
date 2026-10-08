@@ -62,11 +62,13 @@ function dateSimulee(requete: Request): Date | undefined {
  */
 function resume(resultat: ResultatCron) {
   const parStatut: Record<string, number> = {};
+  const parNature: Record<string, number> = {};
   const inconnus = new Set<string>();
   const absentes = new Set<string>();
   const depassees = new Set<string>();
   for (const t of resultat.traites) {
     parStatut[t.statut] = (parStatut[t.statut] ?? 0) + 1;
+    if (t.nature) parNature[t.nature] = (parNature[t.nature] ?? 0) + 1;
     for (const code of t.inconnus ?? []) inconnus.add(code);
     for (const cle of t.absentes ?? []) absentes.add(cle);
     for (const cle of t.depassees ?? []) depassees.add(cle);
@@ -83,6 +85,12 @@ function resume(resultat: ResultatCron) {
     interroges: resultat.interroges,
     dureeMs: resultat.dureeMs,
     parStatut,
+    // ⚠️ `echec_technique` recouvre « le portail a change » et « le portail a
+    // hoquete ». Sans ce decompte, le journal public — le seul lisible sans
+    // acces a Vercel ni a Sentry — ne permet pas de les distinguer, et c'est
+    // un aller-retour perdu a chaque incident. Des compteurs par nature : rien
+    // de nominatif.
+    ...(Object.keys(parNature).length ? { parNature } : {}),
     // Un code d'etat inconnu du portail doit sauter aux yeux : c'est le seul
     // signal annoncant qu'une regle de classement est a completer.
     ...(inconnus.size ? { etatsNonRepertories: [...inconnus] } : {}),
