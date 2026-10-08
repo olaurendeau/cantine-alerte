@@ -306,6 +306,12 @@ export async function executerCron({
         email: parent.email,
         statut: "echec_technique",
         detail,
+        // ⚠️ Sans nature, `signauxDe` n'emettait RIEN pour ce chemin : l'echec
+        // etait compte dans `parStatut` et aucune alerte ne partait. Tout un
+        // pan de pannes — une erreur echappee de traiterParent, la base qui
+        // cligne — restait silencieux, ce que la supervision existe justement
+        // pour empecher.
+        nature: "inconnue",
       });
     }
   }

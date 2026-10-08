@@ -28,8 +28,12 @@ export type OptionsReessai = {
  *
  * - identifiants refuses : reessayer ne peut pas reussir et enchainer les
  *   tentatives risque de faire verrouiller le compte du parent ;
- * - 429 : le portail limite deja le debit, insister prolonge le blocage. On
- *   abandonne pour cette execution et on repassera au prochain rappel ;
+ * - toute ErreurTemporaire hors 5xx (429, 401, 403) : le portail limite deja le
+ *   debit ou refuse la session. Insister prolonge le blocage dans le premier
+ *   cas et ne change rien dans les autres — et chaque tentative refait les
+ *   QUATRE sauts de connexion, soit exactement le motif qui a deja fait tomber
+ *   un 429 sur le compte suivant. Le cycle tourne deux fois par jour : c'est
+ *   lui qui rejoue, pas cette boucle ;
  * - structure illisible : le portail a repondu, mais son HTML ou son JSON a
  *   change. La reponse sera identique au coup suivant, et chaque tentative
  *   refait les quatre sauts de connexion — donc pousse vers le 429 qu'on
@@ -40,7 +44,9 @@ export type OptionsReessai = {
 export const nePasRejouer = (e: unknown): boolean =>
   e instanceof ErreurIdentifiants ||
   e instanceof ErreurStructure ||
-  (e instanceof ErreurTemporaire && e.statut === 429);
+  // Seuls les 5xx sont rejoues : c'est la regle « rejouee sur 5xx, jamais sur
+  // 429 », etendue aux autres 4xx qui l'ont rejointe (401, 403).
+  (e instanceof ErreurTemporaire && e.statut < 500);
 
 const dormir = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

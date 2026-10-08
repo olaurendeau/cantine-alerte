@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ErreurIdentifiants, ErreurStructure, ErreurTemporaire } from "../lib/portail/auth.ts";
-import { reessayer } from "../lib/reessayer.ts";
+import {
+  ErreurIdentifiants,
+  ErreurStructure,
+  ErreurTemporaire,
+  refuserSiIndisponible,
+} from "../lib/portail/auth.ts";
+import { nePasRejouer, reessayer } from "../lib/reessayer.ts";
 
 /** Attentes collectees au lieu d'etre subies, pour que les tests soient instantanes. */
 function faussePatience() {
@@ -132,4 +137,33 @@ test("une structure illisible n'est pas rejouee", async () => {
   );
   assert.equal(appels, 1);
   assert.deepEqual(attentes, []);
+});
+
+test("une session refusee est temporaire, pas un changement de structure", () => {
+  // Observe le 2026-10-08 : un 401/403 classe en ErreurStructure levait une
+  // alerte « le portail a change » et reclamait de reprendre le parsing, pour
+  // une panne qui ne se reproduisait plus huit heures apres.
+  for (const statut of [401, 403]) {
+    assert.throws(
+      () => refuserSiIndisponible(statut, "prestations"),
+      (e: unknown) => e instanceof ErreurTemporaire && (e as ErreurTemporaire).statut === statut,
+    );
+  }
+  // 404 reste structurel : un point d'entree qui disparait, c'est bien l'API
+  // qui a change.
+  assert.equal(refuserSiIndisponible(404, "prestations"), undefined);
+});
+
+test("temporaire ne veut pas dire rejoue dans la foulee", () => {
+  // Chaque tentative refait les QUATRE sauts de connexion. Trois d'affilee sont
+  // exactement ce qui a deja fait tomber un 429 sur le compte suivant, le
+  // throttling du portail etant par adresse IP. Le cycle tourne deux fois par
+  // jour : c'est lui qui rejoue.
+  for (const statut of [401, 403, 429]) {
+    assert.equal(nePasRejouer(new ErreurTemporaire(`HTTP ${statut}`, statut)), true);
+  }
+  // Les 5xx gardent leur nouvelle chance : le portail est en panne, pas fache.
+  for (const statut of [500, 502, 503]) {
+    assert.equal(nePasRejouer(new ErreurTemporaire(`HTTP ${statut}`, statut)), false);
+  }
 });

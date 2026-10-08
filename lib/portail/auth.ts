@@ -61,12 +61,24 @@ export class ErreurStructure extends Error {
 
 /**
  * Statuts qui ne disent rien de la structure de la reponse : le portail limite
- * le debit, ou il est en panne.
+ * le debit, il refuse la session, ou il est en panne.
  *
  * A appeler avant toute tentative de lecture. Sans ce tri, un token absent ou
  * un corps illisible dus a une page d'erreur seraient pris pour un changement
  * de HTML — donc classes en ErreurStructure, que l'on ne rejoue jamais — et un
  * hoquet passager du portail couterait definitivement son rappel a la famille.
+ *
+ * ⚠️ **401 et 403 sont temporaires, pas structurels.** Ils etaient classes en
+ * ErreurStructure au titre du « statut inattendu sur un point d'entree
+ * documente ». Observe le 2026-10-08 : une panne qui ne se reproduisait plus
+ * huit heures apres avait leve une alerte « le portail a change » et reclamait
+ * de reprendre le parsing. Un refus d'authentification sur une session que l'on
+ * vient de creer dit bien plus souvent « reessaie » que « l'API a change » —
+ * ce dernier cas se presente en 404, qui reste structurel.
+ *
+ * Temporaire ne veut pas dire rejoue : cf. `nePasRejouer`, qui ne redonne sa
+ * chance qu'aux 5xx. Trois connexions d'affilee sont precisement ce qui
+ * declenche le throttling par IP.
  */
 export function refuserSiIndisponible(statut: number, etape: string): void {
   if (statut === 429) {
@@ -74,6 +86,13 @@ export function refuserSiIndisponible(statut: number, etape: string): void {
       "429 : le portail limite le debit (throttling par adresse IP). " +
         `Espacer les requetes et reessayer plus tard (${etape}).`,
       429,
+    );
+  }
+  if (statut === 401 || statut === 403) {
+    throw new ErreurTemporaire(
+      `Portail : session refusee sur ${etape} (HTTP ${statut}). ` +
+        "Transitoire le plus souvent ; si cela dure, le flux d'authentification a change.",
+      statut,
     );
   }
   if (statut >= 500) {

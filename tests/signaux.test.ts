@@ -132,3 +132,28 @@ test("aucun signal ne transporte d'adresse", () => {
   assert.doesNotMatch(serialise, /@/);
   assert.doesNotMatch(serialise, /exemple\.fr/);
 });
+
+test("une erreur echappee au cycle ne reste pas silencieuse", () => {
+  // Le filet de derniere instance de `executerCron` posait un `echec_technique`
+  // sans nature : aucun signal n'en sortait, et le parent ne recevait meme pas
+  // de mail d'echec technique puisque ce chemin court-circuite `alerter()`.
+  const [signal, ...reste] = signauxDe(
+    cycle({
+      traites: [parent({ statut: "echec_technique", nature: "inconnue", detail: "db timeout" })],
+    }),
+  );
+  assert.equal(reste.length, 0);
+  assert.equal(signal?.empreinte, "erreur-non-rattrapee");
+  assert.equal(signal?.niveau, "error");
+  assert.equal(signal?.contexte.exemple, "db timeout");
+});
+
+test("une session refusee avertit au lieu d'accuser le portail d'avoir change", () => {
+  // Classee `temporaire` depuis le 2026-10-08 : le signal doit etre
+  // « indisponible » (warning), pas « ne repond plus ce qu'on sait lire ».
+  const [signal] = signauxDe(
+    cycle({ traites: [parent({ statut: "echec_technique", nature: "temporaire", detail: "401" })] }),
+  );
+  assert.equal(signal?.empreinte, "portail-indisponible");
+  assert.equal(signal?.niveau, "warning");
+});

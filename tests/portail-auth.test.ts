@@ -68,8 +68,23 @@ test("une panne du portail est classee avant toute lecture de la reponse", () =>
 
 test("les statuts qui ne disent rien d'une panne laissent passer", () => {
   // C'est la lecture qui tranchera : un 302 est le cas nominal d'un echec de
-  // connexion, un 401 se classe la ou il est rencontre.
-  for (const statut of [200, 302, 401, 404, 419]) {
+  // connexion, un 419 une session Laravel perimee, un 404 un point d'entree
+  // disparu — donc un vrai changement d'API, classe en structure a la lecture.
+  for (const statut of [200, 302, 404, 419]) {
     assert.doesNotThrow(() => refuserSiIndisponible(statut, "un saut"));
+  }
+});
+
+test("une session refusee est une panne passagere, pas un changement d'API", () => {
+  // 401 et 403 passaient ici sans etre classes, pour finir en ErreurStructure a
+  // la lecture. Observe le 2026-10-08 : une panne qui ne se reproduisait plus
+  // huit heures apres avait leve une alerte « le portail a change » et reclamait
+  // de reprendre le parsing. Un refus sur une session qu'on vient de creer dit
+  // bien plus souvent « reessaie » que « l'API a change ».
+  for (const statut of [401, 403]) {
+    assert.throws(
+      () => refuserSiIndisponible(statut, "prestations"),
+      (e: unknown) => e instanceof ErreurTemporaire && (e as ErreurTemporaire).statut === statut,
+    );
   }
 });

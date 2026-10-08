@@ -387,11 +387,20 @@ Points de conception qui ont une raison d'être :
   un hoquet passager du portail en rappel perdu pour la journée.
 - **Trois familles d'erreurs, trois politiques de réessai** (`nePasRejouer`, `lib/reessayer.ts`) :
   `ErreurIdentifiants` (jamais rejouée — insister ferait verrouiller le compte), `ErreurTemporaire`
-  (rejouée sur 5xx, jamais sur 429), `ErreurStructure` (jamais rejouée). Cette dernière couvre tout
+  (**rejouée sur 5xx seulement**), `ErreurStructure` (jamais rejouée). Cette dernière couvre tout
   ce qui relève du parsing : champ caché absent, JSON illisible, `data.pointages` manquant, aucune
-  prestation correspondante — plus les statuts inattendus sur un point d'entrée documenté (401,
-  403, 404). La réponse sera identique au coup suivant, et chaque tentative refait les quatre sauts
-  de connexion — donc pousse vers le `429` qu'on s'applique à éviter.
+  prestation correspondante — plus un **404** sur un point d'entrée documenté, qui dit bien que
+  l'API a changé. La réponse sera identique au coup suivant, et chaque tentative refait les quatre
+  sauts de connexion — donc pousse vers le `429` qu'on s'applique à éviter.
+  ⚠️ **401 et 403 sont `ErreurTemporaire`, pas `ErreurStructure`.** Ils y étaient au titre du
+  « statut inattendu », et le 2026-10-08 l'a démenti : une panne qui ne se reproduisait plus huit
+  heures après avait levé une alerte « le portail a changé » réclamant de reprendre le parsing. Un
+  refus sur une session qu'on vient de créer dit bien plus souvent « réessaie » que « l'API a
+  changé ». ⚠️ Temporaire ne veut **pas** dire rejouée : `nePasRejouer` écarte toute
+  `ErreurTemporaire` sous 500, 429 compris. `reessayer` enveloppe `verifierParent` **en entier**,
+  donc trois tentatives valent trois connexions complètes depuis la même IP — exactement le motif
+  qui a déjà fait tomber un `429` sur le compte suivant. Ce qui rejoue, c'est le cycle, qui passe
+  deux fois par jour.
 - **Tous les appels sortants ont un délai maximal** (`AbortSignal.timeout`) : 15 s par requête vers
   le portail, 10 s vers Brevo. `fetch` attend indéfiniment par défaut ; le cycle est séquentiel dans
   une fonction plafonnée à 300 s, donc une seule connexion qui pend priverait de rappel toutes les
@@ -525,6 +534,16 @@ dans deux endroits que personne ne consulte un mardi soir.
   deux en `echec_technique`, alors que l'une veut dire « reprendre le parsing » et l'autre « ça
   remarchera seul ». D'où le champ `nature` sur `ResultatParent` — une **donnée**, pas un appel à
   Sentry, pour que `lib/` reste ignorant de la plateforme.
+- ⚠️ **Tout `echec_technique` doit porter une `nature`.** Le filet de dernière instance de
+  `executerCron` en posait un sans : `signauxDe` n'émettait alors **rien**, l'échec était compté
+  dans `parStatut` et aucune alerte ne partait — tout un pan de pannes silencieux, ce que la
+  supervision existe justement pour empêcher. Il pose maintenant `"inconnue"`, qui a son propre
+  signal `erreur-non-rattrapee` en `error`. Ce chemin court-circuite `alerter()`, donc le parent ne
+  reçoit même pas de mail d'échec technique : raison de plus pour que ça sonne.
+- **`/api/cron` rend aussi un décompte `parNature`.** `echec_technique` recouvre « le portail a
+  changé » et « le portail a hoqueté » ; sans ce décompte, le journal public — le seul lisible sans
+  accès à Vercel ni à Sentry — ne permet pas de les distinguer, et c'est un aller-retour perdu à
+  chaque incident. Des compteurs, donc rien de nominatif : la règle de §`/api/cron` tient.
 - **Une empreinte fixe par signal** (`setFingerprint`). Sans elle, deux libellés légèrement
   différents ouvriraient deux issues et la boîte grossirait jusqu'à ce qu'on cesse de la lire. Un
   type de signal = une issue, qui se rouvre quand le problème revient. `signauxDe()` est pure et

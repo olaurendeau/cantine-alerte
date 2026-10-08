@@ -81,6 +81,24 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
     });
   }
 
+  const inattendues = parentsDeNature("inconnue");
+  if (inattendues.length) {
+    // Le filet de derniere instance de `executerCron` : une erreur a echappe a
+    // `traiterParent`. On ne sait pas ce que c'est, et c'est bien le probleme —
+    // le parent n'a meme pas recu de mail d'echec technique, puisque ce chemin
+    // court-circuite `alerter()`.
+    signaux.push({
+      empreinte: "erreur-non-rattrapee",
+      niveau: "error",
+      message: `Erreur non rattrapee dans le cycle pour ${inattendues.length} famille(s)`,
+      contexte: {
+        familles: inattendues.length,
+        parentIds: inattendues,
+        exemple: resultat.traites.find((t) => t.nature === "inconnue")?.detail,
+      },
+    });
+  }
+
   // — warning : a regarder, sans reveiller personne —
 
   const temporaires = parentsDeNature("temporaire");
