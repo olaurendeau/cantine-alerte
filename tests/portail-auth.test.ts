@@ -42,7 +42,7 @@ test("les doublons sont fusionnes et le nombre de messages est borne", () => {
   assert.equal(messagesErreur(beaucoup).length, 5);
 });
 
-test("une panne du portail est classee avant toute lecture de la reponse", () => {
+test("une panne du portail est classee sans lire la reponse", () => {
   // Les sauts 1, 2 et 4 de la connexion ne regardaient pas le statut : une page
   // d'erreur 502 ne contient aucun JWT, ce qui se lisait comme un changement de
   // HTML — donc une ErreurStructure, que l'on ne rejoue jamais. Un hoquet

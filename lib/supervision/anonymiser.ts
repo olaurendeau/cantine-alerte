@@ -87,13 +87,27 @@ export type EvenementNettoyable = {
   contexts?: Record<string, Record<string, unknown> | undefined>;
 };
 
-/** Les adresses masquees partout dans une valeur de contexte, quelle qu'en soit la forme. */
-function valeurNettoyee(valeur: unknown): unknown {
+/**
+ * Les adresses masquees partout dans une valeur de contexte, quelle qu'en soit
+ * la forme.
+ *
+ * ⚠️ La profondeur est bornee, et ce n'est pas de la prudence decorative : on
+ * tourne ici dans `beforeSend`, sur des contextes dont le SDK remplit une
+ * partie (`trace`, `runtime`, `os`). Une structure circulaire ferait boucler
+ * l'envoi — et une boucle n'est pas une exception, donc rien ne la rattraperait.
+ * Au-dela de la limite on rend la valeur telle quelle plutot que de la perdre :
+ * aucun de nos contextes n'approche cette profondeur.
+ */
+function valeurNettoyee(valeur: unknown, profondeur = 0): unknown {
   if (typeof valeur === "string") return sansAdresses(valeur);
-  if (Array.isArray(valeur)) return valeur.map(valeurNettoyee);
+  if (profondeur >= 6) return valeur;
+  if (Array.isArray(valeur)) return valeur.map((v) => valeurNettoyee(v, profondeur + 1));
   if (valeur && typeof valeur === "object") {
     return Object.fromEntries(
-      Object.entries(valeur as Record<string, unknown>).map(([c, v]) => [c, valeurNettoyee(v)]),
+      Object.entries(valeur as Record<string, unknown>).map(([c, v]) => [
+        c,
+        valeurNettoyee(v, profondeur + 1),
+      ]),
     );
   }
   return valeur;

@@ -18,13 +18,18 @@ import type { ResultatCron } from "../service/verification.ts";
 export type NiveauSignal = "error" | "warning";
 
 /**
- * Au-dela de ce nombre de cycles consecutifs en echec, une indisponibilite
- * n'est plus passagere.
+ * Au-dela de ce nombre d'INTERROGATIONS consecutives en echec, une
+ * indisponibilite n'est plus passagere.
  *
- * Trois cycles valent environ un jour et demi, le cron passant deux fois par
- * jour. Volontairement aligne sur le seuil de desactivation d'un compte, qui
- * repose sur le meme raisonnement : trois fois d'affilee, ce n'est plus un
- * accident. Ce sont deux decisions distinctes, d'ou deux constantes.
+ * ⚠️ Des interrogations, pas des jours. Une famille qui a active le
+ * periscolaire est vue deux fois par jour, donc trois echecs couvrent environ
+ * un jour et demi ; une famille cantine seule avec un unique jour de rappel
+ * n'est vue que ce jour-la, et les memes trois echecs s'etalent sur pres de
+ * huit jours. Le compteur mesure l'obstination de la panne, pas sa duree.
+ *
+ * Volontairement aligne sur le seuil de desactivation d'un compte, qui repose
+ * sur le meme raisonnement : trois fois d'affilee, ce n'est plus un accident.
+ * Ce sont deux decisions distinctes, d'ou deux constantes.
  */
 const SEUIL_PANNE_DURABLE = 3;
 
@@ -36,6 +41,62 @@ export type Signal = {
   /** Pseudonymes et decomptes uniquement : ni adresse, ni prenom. */
   contexte: Record<string, unknown>;
 };
+
+/**
+ * Le signal d'une panne qui peut s'installer, escalade si elle dure.
+ *
+ * ⚠️ On compte les familles DURABLES a part, au lieu de prendre le maximum des
+ * compteurs : un 401/403 ne desactive jamais un compte (par conception), donc
+ * une famille chroniquement refusee — compte supprime cote collectivite,
+ * adresse portail obsolete — verrait son compteur croitre sans borne et
+ * escaladerait a elle seule le signal de tout le cycle, a chaque passage et
+ * pour toujours. Le message melangerait alors deux echelles : « depuis 47
+ * cycles pour 12 familles », ou 47 est le compteur d'UNE famille et 12 le
+ * total. C'est le chiffre sur lequel on decide s'il faut se lever la nuit.
+ *
+ * ⚠️ L'empreinte distingue aussi « tout le cycle » d'« une famille qui traine ».
+ * Sans ca, la famille chronique garde l'issue ouverte en permanence, et la
+ * vraie panne totale y arrive plus tard sans declencher la moindre
+ * notification : l'escalade se masquerait elle-meme.
+ */
+function signalDePanne(
+  parents: ResultatCron["traites"],
+  interroges: number,
+  base: string,
+  libelle: string,
+): Signal {
+  const durables = parents.filter((t) => (t.echecsConsecutifs ?? 0) >= SEUIL_PANNE_DURABLE);
+  const duree = Math.max(0, ...durables.map((t) => t.echecsConsecutifs ?? 0));
+  const total = durables.length > 0 && durables.length === interroges;
+
+  if (durables.length === 0) {
+    return {
+      empreinte: base,
+      niveau: "warning",
+      message: `${libelle} pour ${parents.length} famille(s)`,
+      contexte: { familles: parents.length, parentIds: parents.map((t) => t.parentId) },
+    };
+  }
+  return {
+    empreinte: total ? `${base}-total` : `${base}-durable`,
+    niveau: "error",
+    message:
+      `${libelle} depuis ${duree} interrogations pour ${durables.length} famille(s)` +
+      (total ? " — TOUTES celles interrogees" : ` sur ${parents.length} en echec`) +
+      " : ce n'est plus passager",
+    contexte: {
+      familles: parents.length,
+      durables: durables.length,
+      interroges,
+      echecsConsecutifs: duree,
+      parentIds: durables.map((t) => t.parentId),
+    },
+  };
+}
+
+/** Le motif d'erreur d'une nature, assaini, ou une chaine vide s'il n'y en a pas. */
+const exempleDe = (resultat: ResultatCron, nature: string): string =>
+  sansAdresses(resultat.traites.find((t) => t.nature === nature && t.detail)?.detail ?? "");
 
 /** Les valeurs distinctes d'un champ liste, tous parents confondus. */
 function cumuler<T>(resultat: ResultatCron, champ: (t: ResultatCron["traites"][number]) => T[] | undefined): T[] {
@@ -88,7 +149,9 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
       contexte: {
         familles: structure.length,
         parentIds: structure,
-        exemple: sansAdresses(resultat.traites.find((t) => t.nature === "structure")?.detail ?? ""),
+        // Omis plutot que vide : « exemple: "" » dans une issue se lit comme
+        // « motif perdu », pas comme « pas de motif ».
+        ...(exempleDe(resultat, "structure") ? { exemple: exempleDe(resultat, "structure") } : {}),
       },
     });
   }
@@ -106,7 +169,9 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
       contexte: {
         familles: horsCycle.length,
         parentIds: horsCycle,
-        exemple: sansAdresses(resultat.traites.find((t) => t.nature === "cycle")?.detail ?? ""),
+        // Omis plutot que vide : « exemple: "" » dans une issue se lit comme
+        // « motif perdu », pas comme « pas de motif ».
+        ...(exempleDe(resultat, "cycle") ? { exemple: exempleDe(resultat, "cycle") } : {}),
       },
     });
   }
@@ -117,15 +182,16 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
     // par exemple, qui leve une Error nue. ⚠️ Contrairement au cas ci-dessus,
     // `alerter()` a bien tourne : le parent a ete prevenu. Les confondre
     // enverrait chercher un bug de boucle la ou le parent est au courant.
+    // ⚠️ Escalade comme une indisponibilite : un 419 au saut 3 atterrit ici, et
+    // c'est precisement la gestion des cookies/CSRF que le projet designe comme
+    // la plus susceptible de casser. Permanente, elle ferait perdre tous les
+    // rappels de toutes les familles pour un warning quotidien.
+    const lot = resultat.traites.filter((t) => t.nature === "inconnue");
+    const signal = signalDePanne(lot, resultat.interroges, "erreur-non-classee", "Erreur non classee");
+    const exemple = sansAdresses(lot.find((t) => t.detail)?.detail ?? "");
     signaux.push({
-      empreinte: "erreur-non-classee",
-      niveau: "warning",
-      message: `Erreur non classee pour ${inattendues.length} famille(s)`,
-      contexte: {
-        familles: inattendues.length,
-        parentIds: inattendues,
-        exemple: sansAdresses(resultat.traites.find((t) => t.nature === "inconnue")?.detail ?? ""),
-      },
+      ...signal,
+      contexte: { ...signal.contexte, ...(exemple ? { exemple } : {}) },
     });
   }
 
@@ -138,27 +204,14 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
     // l'exception d'origine, or ces signaux sont des `captureMessage` sans
     // exception. Un throttling remonte donc bien, ce qui est souhaitable — il
     // dit que le service s'est fait freiner.
-    const duree = Math.max(0, ...temporaires.map((t) => t.echecsConsecutifs ?? 0));
-    // ⚠️ Au-dela de ce seuil, ce n'est plus un hoquet. Sans cette escalade, une
+    // ⚠️ Au-dela du seuil, ce n'est plus un hoquet. Sans cette escalade, une
     // panne PERMANENTE — cle de tenant revoquee, point d'entree passe derriere
     // un nouveau scope — se contenterait d'un warning quotidien, noye dans la
     // meme issue que les coupures de cinq minutes, pendant que toutes les
-    // familles perdent tous leurs rappels. L'empreinte differe aussi : noyer
-    // l'une dans l'autre reviendrait a ne pas escalader du tout.
-    const durable = duree >= SEUIL_PANNE_DURABLE;
-    signaux.push({
-      empreinte: durable ? "portail-indisponible-durable" : "portail-indisponible",
-      niveau: durable ? "error" : "warning",
-      message: durable
-        ? `Portail indisponible depuis ${duree} cycles pour ${temporaires.length} famille(s) : ` +
-          "ce n'est plus passager"
-        : `Portail indisponible pour ${temporaires.length} famille(s)`,
-      contexte: {
-        familles: temporaires.length,
-        parentIds: temporaires.map((t) => t.parentId),
-        echecsConsecutifs: duree,
-      },
-    });
+    // familles perdent tous leurs rappels.
+    signaux.push(
+      signalDePanne(temporaires, resultat.interroges, "portail-indisponible", "Portail indisponible"),
+    );
   }
 
   const echecsEnvoi = resultat.traites.filter((t) => t.statut === "echec_envoi");

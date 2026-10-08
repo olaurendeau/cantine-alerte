@@ -387,10 +387,18 @@ Points de conception qui ont une raison d'être :
   `ErreurTemporaire` distincte d'`ErreurIdentifiants`, (c) aucun réessai sur un `429` — insister
   prolonge le blocage. Le `429` est classé aux **deux** endroits qui interrogent le portail :
   `login` et `getPrestations`. ⚠️ Le classement se fait par `refuserSiIndisponible()`, appelé
-  **avant toute lecture de la réponse**, aux quatre sauts de connexion comme sur les prestations.
-  L'ordre n'est pas cosmétique : une page d'erreur 502 ne contient aucun JWT, ce qui se lisait
-  sinon comme un changement de HTML — donc une `ErreurStructure`, jamais rejouée — et transformait
-  un hoquet passager du portail en rappel perdu pour la journée.
+  **avant toute lecture de la réponse** — partout **sauf au saut 3**, cf. ci-dessus. L'ordre n'est
+  pas cosmétique : une page d'erreur 502 ne contient aucun JWT, ce qui se lisait sinon comme un
+  changement de HTML — donc une `ErreurStructure`, jamais rejouée — et transformait un hoquet
+  passager du portail en rappel perdu pour la journée.
+  ⚠️ **Au saut 3, un `429` et un `5xx` sont classés inconditionnellement, avant même de chercher un
+  message du portail.** Les pages des pare-feu (Cloudflare : `cf-error-details`, `cf-alert-error`)
+  portent des classes que `messagesErreur()` reconnaît : les prendre pour la parole du portail
+  ferait d'un throttling un refus d'identifiants, donc **désactiverait un compte parfaitement
+  valide** au bout de trois cycles — et en silence, `aIgnorer` écartant les identifiants refusés.
+  La preuve que le portail a vraiment traité la demande n'est pas qu'une page comporte un bloc
+  d'erreur, mais que **Laravel ait re-rendu son formulaire de connexion** (`champCache(_token)`).
+  `tests/portail-login.test.ts` verrouille les deux sens.
 - **Trois familles d'erreurs, trois politiques de réessai** (`nePasRejouer`, `lib/reessayer.ts`) :
   `ErreurIdentifiants` (jamais rejouée — insister ferait verrouiller le compte), `ErreurTemporaire`
   (**rejouée sur 5xx seulement**), `ErreurStructure` (jamais rejouée). Cette dernière couvre tout

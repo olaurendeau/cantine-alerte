@@ -64,10 +64,12 @@ export class ErreurStructure extends Error {
  * Statuts qui ne disent rien de la structure de la reponse : le portail limite
  * le debit, il refuse la session, ou il est en panne.
  *
- * A appeler avant toute tentative de lecture. Sans ce tri, un token absent ou
- * un corps illisible dus a une page d'erreur seraient pris pour un changement
- * de HTML — donc classes en ErreurStructure, que l'on ne rejoue jamais — et un
- * hoquet passager du portail couterait definitivement son rappel a la famille.
+ * A appeler avant toute tentative de lecture — sauf au saut 3, seul endroit ou
+ * un refus d'identifiants se juge, et ou l'ordre est donc inverse (cf. `login`).
+ * Sans ce tri, un token absent ou un corps illisible dus a une page d'erreur
+ * seraient pris pour un changement de HTML — donc classes en ErreurStructure,
+ * que l'on ne rejoue jamais — et un hoquet passager du portail couterait
+ * definitivement son rappel a la famille.
  *
  * ⚠️ **401 et 403 sont temporaires, pas structurels.** Ils etaient classes en
  * ErreurStructure au titre du « statut inattendu sur un point d'entree
@@ -213,20 +215,32 @@ export async function login(
   ]);
   const auth = candidats.find((t) => jwtPayload(t).iss === "3douest-auth-server");
   if (!auth) {
+    // ⚠️ Un 429 ou un 5xx est une panne, QUOI QUE raconte la page servie.
+    // Ce garde est inconditionnel et doit le rester : les pages d'erreur des
+    // pare-feu (Cloudflare : `cf-error-details`, `cf-alert-error`) portent des
+    // classes que `messagesErreur` reconnait, et seraient donc prises pour un
+    // message du portail. Les laisser devenir ErreurIdentifiants desactiverait
+    // un compte parfaitement valide au bout de trois cycles — exactement ce que
+    // le service s'interdit — sans aucun signal, `aIgnorer` ecartant les
+    // identifiants refuses.
+    if (premiere.status === 429 || premiere.status >= 500) {
+      refuserSiIndisponible(premiere.status, "la soumission des identifiants");
+    }
+
     const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));
-    // ⚠️ Le classement par statut ne passe qu'ICI, apres le verdict, et
-    // seulement si le portail n'a rien dit. C'est ce qui preserve la regle
-    // « la discrimination succes/echec ne se fait pas sur le code HTTP » :
-    // un bloc role="alert" prouve que le portail a TRAITE les identifiants,
-    // donc qu'il les refuse — meme s'il repond 403. Classer sur le statut
-    // avant de regarder laisserait un refus reel passer pour une panne
-    // passagere : le compte ne serait jamais desactive, et le parent lirait
-    // indefiniment « vos identifiants ne sont pas en cause ».
-    //
-    // A l'inverse, sans message du portail, un 401/403 vient d'un pare-feu ou
-    // d'un proxy qui n'a pas transmis la demande : ErreurTemporaire, donc
-    // aucune desactivation d'un compte parfaitement valide.
-    if (erreurs.length === 0) {
+    // Le portail a-t-il vraiment traite la demande ? La preuve n'est pas qu'une
+    // page comporte un bloc d'erreur — n'importe quel intermediaire en sert —
+    // mais que LARAVEL ait re-rendu son formulaire de connexion, CSRF compris.
+    // C'est ce que fait le portail sur un refus : 302 vers /connexion, suivi
+    // par goSuivi, qui ramene le formulaire portant le message.
+    const formulaireRendu = etapes.some((e) => champCache(e.texte, "_token") !== null);
+
+    // Ce n'est qu'a cette condition que le statut ne decide de rien, ce qui
+    // preserve la regle « la discrimination succes/echec ne se fait pas sur le
+    // code HTTP » : un 403 accompagne du formulaire et de son message est un
+    // refus, pas une panne. Sans cette preuve, un 401/403 vient d'un pare-feu
+    // et reste temporaire — aucun compte valide n'est suspendu.
+    if (!(erreurs.length > 0 && formulaireRendu)) {
       refuserSiIndisponible(premiere.status, "la soumission des identifiants");
     }
     throw new ErreurIdentifiants(
