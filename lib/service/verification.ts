@@ -594,11 +594,12 @@ async function traiterParent(
       ? (erreur.messagePortail ?? erreur.message)
       : erreur.message;
 
-    const echecs = await echec(compte.parentId, detail, invalides);
+    const { echecs, refus } = await echec(compte.parentId, detail, invalides);
     await alerter(compte, adresses, {
       detail,
       invalides,
       echecs,
+      refus,
       expedier: ctx.expedier,
       trace: ctx.trace,
     });
@@ -628,6 +629,7 @@ async function succes(parentId: string) {
     .set({
       verifieLe: new Date(),
       echecsConsecutifs: 0,
+      refusConsecutifs: 0,
       derniereErreur: null,
       // Remise a zero : on re-alertera si une nouvelle panne survient.
       alerteEchecLe: null,
@@ -635,26 +637,42 @@ async function succes(parentId: string) {
     .where(eq(identifiantsPortail.parentId, parentId));
 }
 
-async function echec(parentId: string, detail: string, invalides: boolean): Promise<number> {
+async function echec(
+  parentId: string,
+  detail: string,
+  invalides: boolean,
+): Promise<{ echecs: number; refus: number }> {
   const [ligne] = await db
     .update(identifiantsPortail)
     .set({
       echecsConsecutifs: sql`${identifiantsPortail.echecsConsecutifs} + 1`,
+      // Une panne ne dit rien des identifiants : elle laisse le compteur de
+      // refus tel quel, sans l'augmenter ni le remettre a zero.
+      ...(invalides
+        ? { refusConsecutifs: sql`${identifiantsPortail.refusConsecutifs} + 1` }
+        : {}),
       derniereErreur: detail.slice(0, 500),
     })
     .where(eq(identifiantsPortail.parentId, parentId))
-    .returning({ echecs: identifiantsPortail.echecsConsecutifs });
+    .returning({
+      echecs: identifiantsPortail.echecsConsecutifs,
+      refus: identifiantsPortail.refusConsecutifs,
+    });
 
   const echecs = ligne?.echecs ?? 1;
+  const refus = ligne?.refus ?? (invalides ? 1 : 0);
   // Ne desactiver que sur des identifiants refuses : seul le parent peut y
   // remedier, et insister risque de faire verrouiller son compte. Une panne
   // technique ou un throttling ne doit JAMAIS desactiver un compte valide,
   // sinon une indisponibilite du portail suffirait a couper le service pour
   // tout le monde.
-  if (invalides && echecs >= SEUIL_DESACTIVATION) {
+  // ⚠️ Le seuil se mesure aux REFUS, pas aux echecs. Le 2026-10-20, onze jours
+  // d'erreurs de structure avaient porte `echecs` a 3 : le premier refus — en
+  // fait une page 2FA mal lue — a suffi a suspendre le compte.
+  if (invalides && refus >= SEUIL_DESACTIVATION) {
     await db.update(parents).set({ actif: false }).where(eq(parents.id, parentId));
   }
-  return echecs;
+  return { echecs, refus };
 }
 
 /**
@@ -675,17 +693,26 @@ async function alerter(
     detail,
     invalides,
     echecs,
+    refus,
     expedier,
     trace,
   }: {
     detail: string;
     invalides: boolean;
     echecs: number;
+    refus: number;
     expedier: Expediteur;
     trace: Logger;
   },
 ) {
-  if (compte.alerteEchecLe) return;
+  const desactive = invalides && refus >= SEUIL_DESACTIVATION;
+  // ⚠️ La desactivation passe outre « une alerte par serie ». Le drapeau dit
+  // que le parent connait la panne — pas que son compte vient d'etre coupe. Le
+  // 2026-10-20, une alerte technique deja partie a fait taire celle-ci : le
+  // parent lisait « vos identifiants ne sont pas en cause » pendant que plus
+  // rien ne surveillait ses reservations. Elle ne survient qu'une fois : le
+  // compte desactive n'est plus selectionne.
+  if (compte.alerteEchecLe && !desactive) return;
 
   const tenter = async (quoi: string, envoi: () => Promise<void>): Promise<boolean> => {
     try {
@@ -697,11 +724,11 @@ async function alerter(
     }
   };
 
-  const desactive = invalides && echecs >= SEUIL_DESACTIVATION;
   const parent = mailEchecParent({
     invalides,
     detail,
-    echecs,
+    // Le mail compte les essais avant suspension, donc les refus.
+    echecs: refus,
     seuil: SEUIL_DESACTIVATION,
     desactive,
     liens: liensPour(compte.parentId),

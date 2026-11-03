@@ -1,0 +1,1 @@
+ALTER TABLE "identifiants_portail" ADD COLUMN "refus_consecutifs" integer DEFAULT 0 NOT NULL;

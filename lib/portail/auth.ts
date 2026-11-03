@@ -237,6 +237,18 @@ export async function login(
       refuserSiIndisponible(statutOperant, "la soumission des identifiants");
     }
 
+    // ⚠️ Observe le 2026-11-03 : le SSO exige desormais un code a 6 chiffres
+    // envoye par mail apres le mot de passe. Le mot de passe a donc ete ACCEPTE.
+    // Structurel et non temporaire : rejouer n'y changera rien, et chaque
+    // tentative envoie un code de plus dans la boite du parent.
+    if (etapes.some((e) => /name=["']email_2fa_code["']/.test(e.texte))) {
+      throw new ErreurStructure(
+        "Le portail exige un code de verification envoye par email (2FA) apres le " +
+          "mot de passe. Le mot de passe a ete accepte ; la connexion automatique " +
+          "n'est plus possible en l'etat.",
+      );
+    }
+
     const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));
     // Le portail a-t-il vraiment traite la demande ? La preuve n'est pas qu'une
     // page comporte un bloc d'erreur — n'importe quel intermediaire en sert —
@@ -253,9 +265,22 @@ export async function login(
     if (!(erreurs.length > 0 && formulaireRendu)) {
       refuserSiIndisponible(statutOperant, "la soumission des identifiants");
     }
+    // ⚠️ Une page servie sans que le portail ait rien dit n'est PAS un refus.
+    // C'est ainsi que la page 2FA a desactive un compte valide le 2026-10-20 :
+    // ni JWT, ni message, ni statut d'erreur, donc « identifiants refuses ». Un
+    // refus se reconnait a son message ; sans lui, c'est une page qu'on ne sait
+    // pas lire. Le cas « 302 au corps vide » reste un refus : c'est la forme
+    // documentee, qui n'a jamais rien porte d'autre.
+    const derniere = etapes[etapes.length - 1].texte;
+    if (erreurs.length === 0 && statutOperant < 300 && derniere.trim() !== "") {
+      const titre = derniere.match(/<title[^>]*>([^<]*)/i)?.[1]?.trim() || "sans titre";
+      throw new ErreurStructure(
+        `Page inattendue apres le mot de passe (HTTP ${statutOperant}, « ${titre.slice(0, 120)} ») : ` +
+          "ni jeton ni message du portail. Le flux de connexion a probablement change.",
+      );
+    }
     throw new ErreurIdentifiants(
-      `Connexion refusee (HTTP ${statutOperant}) : identifiants invalides, ` +
-        "throttling, ou verification d'appareil de confiance active.",
+      `Connexion refusee (HTTP ${statutOperant}) : identifiants invalides ou throttling.`,
       erreurs[0] ?? null,
     );
   }

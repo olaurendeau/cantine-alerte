@@ -125,6 +125,15 @@ Deux hôtes distincts coopèrent : `connect1.3douest.com` (SSO Laravel) et
    **Laravel ait re-rendu son formulaire** (`champCache(_token)`), ce qu'un intermédiaire ne fait
    pas. Ainsi un `403` accompagné du formulaire et de son message reste un refus, et un `403` de
    pare-feu reste une panne. `tests/portail-login.test.ts` verrouille les deux sens.
+   ⚠️ **Un refus exige un message du portail.** Une page `2xx` servie sans message et sans JWT
+   est une `ErreurStructure` (son titre remonte dans le motif), jamais un refus : c'est ainsi
+   que la page 2FA a désactivé un compte valide le 2026-10-20. Seul le `302` au corps vide,
+   forme documentée, reste un refus sans message.
+   ⚠️ **Depuis le 2026-10-08, le SSO exige un code 2FA par email** après le mot de passe :
+   page « Vérification 2FA par email », champs `email_2fa_code` et `remember_device`. Elle est
+   reconnue explicitement et lève une `ErreurStructure` — jamais rejouée, puisque chaque
+   tentative envoie un code de plus au parent. **La connexion automatique est donc cassée** tant
+   que la piste de l'appareil de confiance n'est pas livrée (`docs/plans/portail-2fa.md`).
 4. `POST /api/login` avec ce token → Bearer applicatif utilisé pour toute la suite.
 
 En cas d'échec, `messagesErreur()` remonte le message du portail lui-même (ex. « Mauvais email et/ou
@@ -434,9 +443,16 @@ Points de conception qui ont une raison d'être :
   jamais suspendre un compte valide, sinon une indisponibilité couperait le service pour tout le
   monde. Le mail d'échec technique dit d'ailleurs explicitement au parent que ses identifiants ne
   sont pas en cause.
+  ⚠️ **Le seuil se mesure à `refus_consecutifs`, pas à `echecs_consecutifs`.** Ce dernier cumule
+  pannes et refus, et sert à la supervision ; le 2026-10-20, onze jours d'erreurs de structure
+  l'avaient porté à 3, et un seul refus a suspendu le compte. Une panne laisse le compteur de
+  refus inchangé, une réussite le remet à zéro.
 - **Une seule alerte par série d'échecs** (`alerte_echec_le`, remis à `null` à la première
   réussite). Le drapeau n'est posé que si le mail au parent est **effectivement parti** : sinon un
   expéditeur en panne ferait taire l'alerte pour toute la série.
+  ⚠️ **La désactivation passe outre ce drapeau.** Il dit « le parent connaît la panne », pas « il
+  sait que son compte est coupé » : sans cette exception, une alerte technique déjà partie faisait
+  taire le seul mail annonçant que plus rien ne surveillait ses réservations.
 - **Les rappels sont exprimés en jours de semaine** dans l'UI (`libelleJourAvant`) : l'échéance étant
   toujours un lundi, J-1 = dimanche et J-3 = vendredi. « samedi » parle à un parent, « J-2 » non.
   Plage utile 0..6 — au-delà on retomberait sur l'échéance précédente.
