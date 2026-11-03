@@ -55,6 +55,13 @@ export const identifiantsPortail = pgTable("identifiants_portail", {
   /** Derniere connexion reussie au portail. Affiche au parent et a l'admin. */
   verifieLe: timestamp("verifie_le", { withTimezone: true }),
   echecsConsecutifs: integer("echecs_consecutifs").notNull().default(0),
+  /**
+   * Refus d'identifiants consecutifs, seuls. C'est lui, et non
+   * `echecs_consecutifs`, qui decide de la desactivation : ce dernier cumule
+   * pannes et refus, si bien qu'une serie d'erreurs techniques suivie d'un seul
+   * refus suspendait le compte (observe le 2026-10-20).
+   */
+  refusConsecutifs: integer("refus_consecutifs").notNull().default(0),
   derniereErreur: text("derniere_erreur"),
   /**
    * Date du dernier mail d'alerte pour cette serie d'echecs. Remise a null a la

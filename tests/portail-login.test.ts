@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ErreurIdentifiants, ErreurTemporaire, login } from "../lib/portail/auth.ts";
+import {
+  ErreurIdentifiants,
+  ErreurStructure,
+  ErreurTemporaire,
+  login,
+} from "../lib/portail/auth.ts";
 import type { Session } from "../lib/portail/session.ts";
 import type { ConfigPortail } from "../lib/portail/types.ts";
 
@@ -35,6 +40,18 @@ const REFUS = `${FORMULAIRE}<div role="alert">Mauvais email et/ou mot de passe.<
 const CLOUDFLARE =
   `<div class="cf-error-details-wrapper"><span class="cf-alert-error">` +
   `Banned. You are being rate limited.</span></div>`;
+
+/**
+ * La page servie depuis le 2026-10-08 apres un mot de passe accepte, reduite a
+ * ce qui la distingue : un formulaire Laravel portant `email_2fa_code`, et pas
+ * le moindre message d'erreur.
+ */
+const DEUX_FACTEURS =
+  `<title>Vérification 2FA par email - Logiciel enfance</title>` +
+  `<form action="https://connect1.3douest.com/connexion" method="POST">` +
+  `<input type="hidden" name="_token" value="csrf456" autocomplete="off">` +
+  `<input class="otp-hidden-input" id="email_2fa_code" type="hidden" name="email_2fa_code">` +
+  `<input type="checkbox" name="remember_device" id="remember_device" value="1"></form>`;
 
 const config = (): ConfigPortail => ({
   email: "parent@exemple.fr",
@@ -178,5 +195,34 @@ test("une absence de JWT sans message ni formulaire est un refus", async () => {
   await assert.rejects(
     () => login(config(), sessionJusquAuSaut3(302, "")),
     (e: unknown) => e instanceof ErreurIdentifiants,
+  );
+});
+
+test("la page 2FA n'est pas un refus d'identifiants", async () => {
+  // Ce qui s'est produit le 2026-10-20 : ni JWT, ni message, ni statut
+  // d'erreur, donc « identifiants refuses » — et un compte valide desactive.
+  // Le mot de passe a au contraire ete accepte.
+  await assert.rejects(
+    () => login(config(), sessionJusquAuSaut3(200, DEUX_FACTEURS)),
+    (e: unknown) => e instanceof ErreurStructure && /2FA/.test((e as Error).message),
+  );
+});
+
+test("la page 2FA atteinte apres une redirection reste reconnue", async () => {
+  await assert.rejects(
+    () => login(config(), sessionEnChaine(200, DEUX_FACTEURS)),
+    (e: unknown) => e instanceof ErreurStructure && /2FA/.test((e as Error).message),
+  );
+});
+
+test("une page servie sans message du portail n'est pas un refus", async () => {
+  // Le prochain ecran intermediaire — CGU a accepter, changement de mot de
+  // passe impose — ne doit pas suspendre le compte non plus. Le titre remonte
+  // dans le motif : c'est le seul indice dont on dispose sans la page.
+  const page = `<title>Conditions d'utilisation</title><form>${FORMULAIRE}</form>`;
+  await assert.rejects(
+    () => login(config(), sessionJusquAuSaut3(200, page)),
+    (e: unknown) =>
+      e instanceof ErreurStructure && /Conditions d'utilisation/.test((e as Error).message),
   );
 });

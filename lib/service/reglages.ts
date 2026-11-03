@@ -189,6 +189,7 @@ export async function enregistrerIdentifiants(
     cleVersion: VERSION_CLE_COURANTE,
     verifieLe: new Date(),
     echecsConsecutifs: 0,
+    refusConsecutifs: 0,
     derniereErreur: null,
     alerteEchecLe: null,
   };
@@ -339,7 +340,13 @@ export async function verifierMaintenant(
     const r = await reessayer(() => verifierParent(cfg, { aujourdhui, fenetres }));
     await db
       .update(identifiantsPortail)
-      .set({ verifieLe: new Date(), echecsConsecutifs: 0, derniereErreur: null, alerteEchecLe: null })
+      .set({
+        verifieLe: new Date(),
+        echecsConsecutifs: 0,
+        refusConsecutifs: 0,
+        derniereErreur: null,
+        alerteEchecLe: null,
+      })
       .where(eq(identifiantsPortail.parentId, parentId));
     return {
       ok: true,

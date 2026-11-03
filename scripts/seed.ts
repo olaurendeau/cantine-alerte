@@ -77,6 +77,7 @@ await db
     portailEmail,
     mdpChiffre: chiffrer(motDePasse, parent.id),
     echecsConsecutifs: 0,
+    refusConsecutifs: 0,
     derniereErreur: null,
     alerteEchecLe: null,
   })
@@ -86,6 +87,7 @@ await db
       portailEmail,
       mdpChiffre: chiffrer(motDePasse, parent.id),
       echecsConsecutifs: 0,
+      refusConsecutifs: 0,
       derniereErreur: null,
       alerteEchecLe: null,
     },
