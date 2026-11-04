@@ -22,10 +22,11 @@ identifiants par une connexion complète : **un nouveau parent ne peut même plu
 | Le cookie n'est **pas** réémis à la connexion suivante | Expiration fixe : un code à ressaisir **tous les 30 jours**, quoi qu'on fasse |
 | Code reçu **~15 min** après la demande ; valable 60 min | Le parcours doit supporter une longue attente entre deux requêtes |
 | `laravel-session` : `Max-Age=7200` | Une connexion entamée survit 2 h côté portail |
+| **2026-11-04 : même cookie, autre opérateur** (box fixe → partage 4G), connexion sans code | La confiance n'est pas liée à l'IP, du moins pas entre réseaux grand public |
 
-**Non vérifié : la confiance est-elle liée à l'adresse IP ?** Les deux connexions de l'essai
-partaient de la même machine. Le cron tourne sur Vercel, dont les IP changent. C'est le risque qui
-peut invalider toute la piste ; l'étape 0 sert à le lever avant de construire l'interface.
+**Liaison à l'IP : écartée entre deux réseaux grand public (étape 0a), reste à confirmer depuis
+Vercel.** Une IP de centre de données peut être traitée autrement qu'une IP mobile ; l'étape 0b
+le tranche.
 
 ## Décisions structurantes
 
@@ -94,6 +95,7 @@ dans le scratchpad) depuis une autre IP : le poste passé sur le partage de conn
 téléphone, donc un autre opérateur. Une minute, aucun code envoyé si ça passe, un seul sinon.
 Un échec tranche la question sans une ligne de code ; une réussite ne la tranche qu'à moitié —
 une IP de centre de données peut être traitée autrement qu'une IP mobile — d'où 0b.
+**Fait le 2026-11-04 : réussi.** Le cookie n'a de nouveau pas été réémis.
 
 **0b — `scripts/associer.ts`, depuis Vercel.**
 
