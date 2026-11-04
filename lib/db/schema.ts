@@ -68,6 +68,15 @@ export const identifiantsPortail = pgTable("identifiants_portail", {
    * premiere reussite : on previent une fois par panne, pas une fois par jour.
    */
   alerteEchecLe: timestamp("alerte_echec_le", { withTimezone: true }),
+  /**
+   * Cookie « appareil de confiance » du portail, chiffre comme `mdp_chiffre`
+   * (AAD = parent_id). Il dispense du code 2FA : sans lui le cron n'appelle
+   * pas le portail, chaque tentative enverrait un code au parent. Meme regime
+   * que le mot de passe : jamais charge par l'admin, jamais journalise.
+   */
+  appareilChiffre: text("appareil_chiffre"),
+  /** Fin de validite annoncee par le portail (`Max-Age`, 30 jours). Non renouvelee a l'usage. */
+  appareilExpireLe: timestamp("appareil_expire_le", { withTimezone: true }),
 });
 
 /**

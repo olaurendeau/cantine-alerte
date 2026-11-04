@@ -53,6 +53,8 @@ Trois défauts se sont enchaînés, et c'est leur combinaison qui a rendu la pan
   parent saisit une fois le code dans l'app, on soumet `remember_device=1` et l'on conserve
   le cookie obtenu, chiffré, pour 30 jours. À valider par une expérience : la confiance
   est-elle liée au seul cookie, ou aussi à l'IP (qui change sur Vercel) ?
+  **Mis à jour le 2026-11-03** : le cookie `_email_2fa_device` (30 jours) suffit à se reconnecter
+  sans code depuis la même IP. Suite dans `docs/plans/appareil-de-confiance.md`.
 - **`total` qui tombe à 0** ne déclenche aucun signal. Une famille désactivée sort de la
   liste, et si c'est la dernière, le cycle n'a plus rien à dire.
 - **Le filet de 19 h UTC part en pratique entre 21 h et 1 h 30 UTC**, souvent après minuit
