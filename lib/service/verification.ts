@@ -13,6 +13,7 @@ import {
   type Liens,
 } from "../mail/messages.ts";
 import {
+  ErreurDoubleFacteur,
   ErreurIdentifiants,
   PORTAIL_DEFAUT,
   ajouter,
@@ -101,6 +102,11 @@ export type StatutParent =
   /** Verification faite, message compose, mais l'expediteur n'a pas pu envoyer. */
   | "echec_envoi"
   | "identifiants_invalides"
+  /**
+   * Aucun appareil de confiance valide : le portail exigerait le code 2FA. On
+   * ne l'appelle PAS — chaque tentative enverrait un code au parent.
+   */
+  | "appareil_a_associer"
   | "echec_technique";
 
 export type ResultatParent = {
@@ -176,6 +182,20 @@ export const estAdmin = (email: string, env: Env = process.env): boolean =>
   adminEmails(env).includes(email.trim().toLowerCase());
 
 /**
+ * Peut-on se presenter au portail avec cet appareil de confiance ?
+ *
+ * Une expiration inconnue laisse tenter : le portail tranchera, et un appareil
+ * rejete est efface apres une seule tentative, donc un seul code parasite.
+ */
+export function appareilUtilisable(
+  appareil: { chiffre: string | null; expireLe: Date | null },
+  maintenant: Date,
+): boolean {
+  if (!appareil.chiffre) return false;
+  return appareil.expireLe === null || appareil.expireLe.getTime() > maintenant.getTime();
+}
+
+/**
  * Un cycle de rappel complet.
  *
  * Une seule execution quotidienne sert toutes les preferences : le rappel de
@@ -209,6 +229,8 @@ export async function executerCron({
       email: parents.email,
       portailEmail: identifiantsPortail.portailEmail,
       mdpChiffre: identifiantsPortail.mdpChiffre,
+      appareilChiffre: identifiantsPortail.appareilChiffre,
+      appareilExpireLe: identifiantsPortail.appareilExpireLe,
       echecs: identifiantsPortail.echecsConsecutifs,
       alerteEchecLe: identifiantsPortail.alerteEchecLe,
       joursAvant: rappels.joursAvant,
@@ -281,6 +303,17 @@ export async function executerCron({
       continue;
     }
 
+    // ⚠️ Sans appareil de confiance, pas d'appel au portail : il s'arreterait
+    // sur la page du code 2FA, APRES avoir envoye ce code au parent — un cron
+    // quotidien lui en enverrait un par jour. La famille reste dans la liste et
+    // dans le decompte : c'est sa disparition, le `total: 0` d'octobre 2026,
+    // qui avait rendu la panne invisible.
+    if (!appareilUtilisable({ chiffre: parent.appareilChiffre, expireLe: parent.appareilExpireLe }, maintenant)) {
+      trace(`parent ${parent.parentId} : aucun appareil de confiance valide, portail non interroge`);
+      traites.push({ parentId: parent.parentId, email: parent.email, statut: "appareil_a_associer" });
+      continue;
+    }
+
     // Le portail limite le debit par adresse IP : enchainer les connexions sans
     // pause finit en 429, et ce 429 frappe alors des comptes valides. On espace
     // donc les familles reellement interrogees — pauser pour un compte qu'on
@@ -347,6 +380,7 @@ type Compte = {
   email: string;
   portailEmail: string;
   mdpChiffre: string;
+  appareilChiffre: string | null;
   echecs: number;
   alerteEchecLe: Date | null;
   joursAvant: number[];
@@ -399,6 +433,9 @@ async function traiterParent(
     const cfg = configDepuisEnv(process.env, {
       email: compte.portailEmail,
       password: dechiffrer(compte.mdpChiffre, compte.parentId),
+      ...(compte.appareilChiffre
+        ? { appareil: dechiffrer(compte.appareilChiffre, compte.parentId) }
+        : {}),
     });
 
     // Reessais sur panne du portail, jamais sur identifiants refuses. Les
@@ -594,6 +631,13 @@ async function traiterParent(
       ? (erreur.messagePortail ?? erreur.message)
       : erreur.message;
 
+    if (erreur instanceof ErreurDoubleFacteur && erreur.rejete) {
+      // Le portail ne reconnait plus cet appareil : le garder ferait envoyer un
+      // code au parent a chaque passage. Efface, la famille passe en
+      // `appareil_a_associer` des le cycle suivant.
+      await oublierAppareil(compte.parentId, ctx.trace);
+    }
+
     const { echecs, refus } = await echec(compte.parentId, detail, invalides);
     await alerter(compte, adresses, {
       detail,
@@ -621,6 +665,18 @@ async function destinatairesDe(parentId: string, secours: string): Promise<strin
     .from(destinataires)
     .where(eq(destinataires.parentId, parentId));
   return lignes.length ? lignes.map((l) => l.email) : [secours];
+}
+
+/** Defensif : on est dans la branche d'erreur, l'alerte doit encore partir. */
+async function oublierAppareil(parentId: string, trace: Logger) {
+  try {
+    await db
+      .update(identifiantsPortail)
+      .set({ appareilChiffre: null, appareilExpireLe: null })
+      .where(eq(identifiantsPortail.parentId, parentId));
+  } catch (e) {
+    trace(`parent ${parentId} : appareil rejete non efface (${(e as Error).message})`);
+  }
 }
 
 async function succes(parentId: string) {

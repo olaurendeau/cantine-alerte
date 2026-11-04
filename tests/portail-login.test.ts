@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  ErreurDoubleFacteur,
   ErreurIdentifiants,
   ErreurStructure,
   ErreurTemporaire,
@@ -204,15 +205,28 @@ test("la page 2FA n'est pas un refus d'identifiants", async () => {
   // Le mot de passe a au contraire ete accepte.
   await assert.rejects(
     () => login(config(), sessionJusquAuSaut3(200, DEUX_FACTEURS)),
-    (e: unknown) => e instanceof ErreurStructure && /2FA/.test((e as Error).message),
+    (e: unknown) => e instanceof ErreurDoubleFacteur && !(e as ErreurDoubleFacteur).rejete,
   );
 });
 
 test("la page 2FA atteinte apres une redirection reste reconnue", async () => {
   await assert.rejects(
     () => login(config(), sessionEnChaine(200, DEUX_FACTEURS)),
-    (e: unknown) => e instanceof ErreurStructure && /2FA/.test((e as Error).message),
+    (e: unknown) => e instanceof ErreurDoubleFacteur,
   );
+});
+
+test("la page 2FA malgre un appareil presente est un appareil rejete", async () => {
+  // Le detecteur d'une confiance liee a l'IP : le cron ne se presente jamais
+  // sans appareil, donc cette page-la veut dire que le portail l'a refuse.
+  const poses: string[] = [];
+  const session = sessionJusquAuSaut3(200, DEUX_FACTEURS);
+  Object.assign(session, { poser: (hote: string, nom: string) => poses.push(`${hote} ${nom}`) });
+  await assert.rejects(
+    () => login({ ...config(), appareil: "valeur" }, session),
+    (e: unknown) => e instanceof ErreurDoubleFacteur && (e as ErreurDoubleFacteur).rejete,
+  );
+  assert.deepEqual(poses, ["connect1.3douest.com _email_2fa_device"]);
 });
 
 test("une page servie sans message du portail n'est pas un refus", async () => {

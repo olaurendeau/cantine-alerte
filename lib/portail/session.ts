@@ -41,47 +41,95 @@ export function propre(texte: unknown, max = 120): string {
 export type Etape = { url: string; res: Response; texte: string };
 export type Session = ReturnType<typeof nouvelleSession>;
 
+/** Un cookie tel que le pot le garde : sa valeur, et sa date de fin si le serveur en donne une. */
+export type Cookie = { valeur: string; expireLe: Date | null };
+
+/**
+ * L'expiration annoncee par un Set-Cookie. `Max-Age` prime sur `Expires`,
+ * comme dans un navigateur ; ni l'un ni l'autre, c'est un cookie de session.
+ */
+export function expirationDe(attributs: string[], maintenant = new Date()): Date | null {
+  let expires: Date | null = null;
+  for (const brut of attributs) {
+    const i = brut.indexOf("=");
+    const nom = (i < 0 ? brut : brut.slice(0, i)).trim().toLowerCase();
+    const valeur = i < 0 ? "" : brut.slice(i + 1).trim();
+    if (nom === "max-age" && /^-?\d+$/.test(valeur)) {
+      return new Date(maintenant.getTime() + Number(valeur) * 1000);
+    }
+    if (nom === "expires") {
+      const d = new Date(valeur);
+      if (!Number.isNaN(d.getTime())) expires = d;
+    }
+  }
+  return expires;
+}
+
 /**
  * fetch ne persiste ni cookies ni redirections. Chaque session a son propre
  * pot a cookies : c'est ce qui permet au cron d'iterer sur plusieurs familles
  * sans qu'une session fuite sur la suivante.
+ *
+ * ⚠️ Le pot est rangé PAR HOTE, et un cookie ne repart que vers l'hote qui l'a
+ * pose. Il envoyait auparavant tout a tout le monde, ce qui etait sans
+ * consequence tant qu'il ne contenait que des cookies de session — mais le
+ * cookie d'appareil de confiance de `connect1` dispense du code 2FA pendant
+ * 30 jours : il n'a rien a faire chez `gestion.logiciel-enfance.fr`. Aucun des
+ * cookies poses ne porte d'attribut `Domain`, donc l'hote exact suffit.
  */
 export function nouvelleSession(
   trace: Logger = silencieux,
   { budgetMs = BUDGET_SESSION_MS }: { budgetMs?: number } = {},
 ) {
-  const jar = new Map<string, string>();
+  const pot = new Map<string, Map<string, Cookie>>();
   // Un seul signal pour toute la session : il court des la creation, donc le
   // temps deja consomme par les sauts precedents n'est pas remis a zero.
   const echeanceSession = AbortSignal.timeout(budgetMs);
 
-  function absorber(res: Response) {
+  const potDe = (hote: string) => {
+    let cookies = pot.get(hote);
+    if (!cookies) pot.set(hote, (cookies = new Map()));
+    return cookies;
+  };
+
+  function absorber(url: string, res: Response) {
+    const hote = new URL(url).host;
     const noms: string[] = [];
     for (const ligne of res.headers.getSetCookie?.() ?? []) {
-      const [paire] = ligne.split(";");
+      const [paire, ...attributs] = ligne.split(";");
       const i = paire.indexOf("=");
       if (i > 0) {
         const nom = paire.slice(0, i).trim();
-        jar.set(nom, paire.slice(i + 1).trim());
+        potDe(hote).set(nom, { valeur: paire.slice(i + 1).trim(), expireLe: expirationDe(attributs) });
         noms.push(nom);
       }
     }
-    if (noms.length) trace("cookies:", noms.join(", "));
+    if (noms.length) trace(`cookies ${hote}:`, noms.join(", "));
   }
+
+  /** Lit un cookie du pot. Ne jamais tracer la valeur : c'est un secret. */
+  const cookie = (hote: string, nom: string): Cookie | undefined => pot.get(hote)?.get(nom);
+
+  /** Pose un cookie, typiquement l'appareil de confiance conserve en base. */
+  const poser = (hote: string, nom: string, valeur: string) =>
+    potDe(hote).set(nom, { valeur, expireLe: null });
 
   async function go(url: string, opts: RequestInit = {}): Promise<Response> {
     const headers: Record<string, string> = {
       "user-agent": UA,
       ...((opts.headers as Record<string, string>) ?? {}),
     };
-    if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+    const cookies = pot.get(new URL(url).host);
+    if (cookies?.size) {
+      headers.cookie = [...cookies].map(([k, c]) => `${k}=${c.valeur}`).join("; ");
+    }
     const res = await fetch(url, {
       signal: AbortSignal.any([echeanceSession, AbortSignal.timeout(DELAI_MAX_MS)]),
       ...opts,
       headers,
       redirect: "manual",
     });
-    absorber(res);
+    absorber(url, res);
     trace(`${opts.method ?? "GET"} ${propre(url)} -> ${res.status}`);
     const loc = res.headers.get("location");
     if (loc) trace("location:", propre(loc));
@@ -108,5 +156,5 @@ export function nouvelleSession(
     return etapes;
   }
 
-  return { go, goSuivi, jar };
+  return { go, goSuivi, cookie, poser };
 }

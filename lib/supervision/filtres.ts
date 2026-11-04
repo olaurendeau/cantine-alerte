@@ -38,6 +38,12 @@ function statutDe(erreur: Error): number | undefined {
 export function aIgnorer(erreur: unknown): boolean {
   if (!(erreur instanceof Error)) return false;
   if (erreur.name === "ErreurIdentifiants") return true;
+  // Un appareil de confiance absent ou expire est le fonctionnement normal : il
+  // dure 30 jours, puis le parent ressaisit un code. Un appareil REJETE alors
+  // qu'il etait valide, lui, doit remonter : cf. `ErreurDoubleFacteur`.
+  if (erreur.name === "ErreurDoubleFacteur" && !(erreur as Error & { rejete?: unknown }).rejete) {
+    return true;
+  }
   if (erreur.name === "ErreurTemporaire" && statutDe(erreur) === 429) return true;
   return false;
 }
@@ -51,7 +57,14 @@ export function aIgnorer(erreur: unknown): boolean {
  * sort du filet de derniere instance d'`executerCron`, qui court-circuite
  * `alerter()` : la famille n'a RIEN recu. Le diagnostic n'est pas le meme.
  */
-export type NatureEchec = "identifiants" | "temporaire" | "structure" | "inconnue" | "cycle";
+export type NatureEchec =
+  | "identifiants"
+  | "temporaire"
+  | "structure"
+  /** Le portail a redemande le code 2FA malgre l'appareil de confiance. */
+  | "appareil"
+  | "inconnue"
+  | "cycle";
 
 /**
  * La nature d'une erreur, telle que le cycle la consigne.
@@ -70,6 +83,8 @@ export function natureDe(erreur: unknown): NatureEchec {
       return "temporaire";
     case "ErreurStructure":
       return "structure";
+    case "ErreurDoubleFacteur":
+      return "appareil";
     default:
       return "inconnue";
   }

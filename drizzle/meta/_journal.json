@@ -36,6 +36,13 @@
       "when": 1793722885152,
       "tag": "0004_refus_consecutifs",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793812465393,
+      "tag": "0005_appareil_de_confiance",
+      "breakpoints": true
     }
   ]
 }
