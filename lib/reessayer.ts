@@ -1,4 +1,9 @@
-import { ErreurIdentifiants, ErreurStructure, ErreurTemporaire } from "./portail/auth.ts";
+import {
+  ErreurDoubleFacteur,
+  ErreurIdentifiants,
+  ErreurStructure,
+  ErreurTemporaire,
+} from "./portail/auth.ts";
 import type { Logger } from "./portail/types.ts";
 import { silencieux } from "./portail/types.ts";
 
@@ -43,11 +48,15 @@ export type OptionsReessai = {
  *   refait les quatre sauts de connexion — donc pousse vers le 429 qu'on
  *   s'applique par ailleurs a eviter.
  *
+ * - code 2FA exige : rejouer refait la connexion, donc envoie un code de plus
+ *   dans la boite du parent, et la reponse sera la meme.
+ *
  * Les 5xx et les erreurs reseau, elles, meritent un nouvel essai.
  */
 export const nePasRejouer = (e: unknown): boolean =>
   e instanceof ErreurIdentifiants ||
   e instanceof ErreurStructure ||
+  e instanceof ErreurDoubleFacteur ||
   // Les 4xx ne sont pas rejoues ; les 5xx le restent. ⚠️ La borne basse n'est
   // pas decorative : `statut < 500` seul ecarterait aussi un futur
   // `ErreurTemporaire("timeout", 0)` pose pour un AbortSignal — extension

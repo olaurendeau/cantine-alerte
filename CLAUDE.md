@@ -65,6 +65,7 @@ node scripts/verifier.ts --dump 2>/dev/null | jq        # payload brut (stdout =
 node scripts/verifier.ts --verbose                      # trace chaque étape HTTP
 node scripts/cron.ts --date 2026-09-10                  # exécute un cycle de rappel complet
 node scripts/seed.ts --rappels 0,1,4 --matin 0,3        # crée un compte de test depuis le .env
+node scripts/associer.ts --compte moi@exemple.fr         # saisit le code 2FA, enregistre l'appareil
 node scripts/lien.ts moi@exemple.fr                     # génère un lien de connexion
 node scripts/apercu-mail.ts                             # rend les 11 variantes dans apercu/
 node scripts/tester-mail.ts moi@exemple.fr              # envoie un vrai gabarit
@@ -92,12 +93,18 @@ consommateurs. Quatre couches successives, chacune dépendante de la précédent
 ### 1. Session HTTP maison
 
 `fetch` ne persiste rien et suit les redirections par défaut. `nouvelleSession()` encapsule donc un
-cookie jar (`Map` alimentée par `res.headers.getSetCookie()`) et deux helpers en `redirect: "manual"` :
+cookie jar **rangé par hôte** (alimenté par `res.headers.getSetCookie()`, expiration `Max-Age` comprise)
+et deux helpers en `redirect: "manual"` :
 `go()` pour un appel simple, `goSuivi()` qui suit une chaîne de redirections en conservant **chaque**
 réponse. Toute requête vers le portail doit passer par là, sinon la session Laravel est perdue.
 
 La session est un objet et non un global : c'est ce qui permettra d'itérer sur plusieurs familles en
 phase 2 sans fuite de cookies d'un compte à l'autre.
+
+⚠️ **Un cookie ne repart que vers l'hôte qui l'a posé.** Le pot envoyait tout à tout le monde, ce qui
+était sans conséquence tant qu'il ne contenait que des cookies de session ; l'appareil de confiance
+de `connect1` dispense du code 2FA et n'a rien à faire chez `gestion`. Vérifié de bout en bout le
+2026-11-04 : le flux n'a jamais dépendu d'un cookie envoyé au mauvais hôte.
 
 ### 2. Authentification en 4 sauts (le morceau délicat)
 
@@ -130,10 +137,15 @@ Deux hôtes distincts coopèrent : `connect1.3douest.com` (SSO Laravel) et
    que la page 2FA a désactivé un compte valide le 2026-10-20. Seul le `302` au corps vide,
    forme documentée, reste un refus sans message.
    ⚠️ **Depuis le 2026-10-08, le SSO exige un code 2FA par email** après le mot de passe :
-   page « Vérification 2FA par email », champs `email_2fa_code` et `remember_device`. Elle est
-   reconnue explicitement et lève une `ErreurStructure` — jamais rejouée, puisque chaque
-   tentative envoie un code de plus au parent. **La connexion automatique est donc cassée** tant
-   que la piste de l'appareil de confiance n'est pas livrée (`docs/plans/portail-2fa.md`).
+   page « Vérification 2FA par email », champs `email_2fa_code` et `remember_device`. Elle lève
+   `ErreurDoubleFacteur` — jamais rejouée, puisque chaque tentative envoie un code de plus au
+   parent. Ce qui la franchit est le cookie **`_email_2fa_device`** (« appareil de confiance »),
+   posé quand le code est soumis avec `remember_device=1` : valable 30 jours, **non renouvelé à
+   l'usage**, et indépendant de l'IP (vérifié d'un opérateur à l'autre le 2026-11-04).
+   `cfg.appareil` le pose dans le pot avant le saut 3 ; `demanderCode` / `validerCode` font
+   l'association. `ErreurDoubleFacteur.rejete` distingue « pas d'appareil » (normal) de
+   « appareil présenté et refusé » (le portail a changé de règle). Plan :
+   `docs/plans/appareil-de-confiance.md`.
 4. `POST /api/login` avec ce token → Bearer applicatif utilisé pour toute la suite.
 
 En cas d'échec, `messagesErreur()` remonte le message du portail lui-même (ex. « Mauvais email et/ou
@@ -439,6 +451,13 @@ Points de conception qui ont une raison d'être :
   et `alerter()` est entièrement défensif : c'est du code qui s'exécute déjà dans la branche
   d'erreur, souvent parce que l'expéditeur est en panne. Un mail d'alerte perdu est bénin, un
   rappel perdu ne l'est pas.
+- ⚠️ **Sans appareil de confiance valide, le cycle n'appelle PAS le portail.** Chaque connexion
+  sans lui s'arrête sur la page 2FA *après* avoir envoyé un code au parent : un cron quotidien lui
+  en enverrait un par jour. La famille reste dans la liste avec le statut `appareil_a_associer` —
+  sa disparition, le `total: 0` d'octobre 2026, est ce qui avait rendu la panne invisible. Un
+  appareil présenté puis refusé est **effacé** (un seul code parasite) et lève le signal
+  `appareil-rejete` en `error`. Même garde dans « vérifier maintenant », le mail de test et
+  l'enregistrement des identifiants.
 - **Ne désactiver un compte que sur identifiants refusés.** Une panne du portail ou un `429` ne doit
   jamais suspendre un compte valide, sinon une indisponibilité couperait le service pour tout le
   monde. Le mail d'échec technique dit d'ailleurs explicitement au parent que ses identifiants ne

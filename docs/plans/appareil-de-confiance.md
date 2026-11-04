@@ -118,9 +118,11 @@ prouverait rien. Les mails et la relance d'expiration restent en PR B.
 ### 1. Session — `lib/portail/session.ts`
 
 - Pot à cookies indexé par hôte (`Map<hote, Map<nom, valeur>>`), envoi limité à l'hôte d'origine.
-  ⚠️ Non vérifié : rien n'indique que le flux actuel dépende de cookies envoyés au mauvais hôte,
-  mais l'essai de l'étape 0 doit le confirmer avant de s'y fier.
-- `exporter()` / `nouvelleSession({ pot })` pour sérialiser et recharger une connexion entamée.
+  **Vérifié le 2026-11-04** : `scripts/verifier.ts` passe de bout en bout (sauts 1 à 4 puis
+  prestations) avec le pot par hôte et l'appareil injecté.
+- `exporter()` / `nouvelleSession({ pot })` pour sérialiser et recharger une connexion entamée :
+  **reporté en PR B**, seul l'écran d'association en a besoin — `associer.ts` garde la connexion
+  en mémoire.
 - Conserver l'expiration des `Set-Cookie` (`Max-Age`, à défaut `expires`) : c'est elle qui donne
   la date du cookie de confiance.
 
@@ -144,8 +146,8 @@ Sur `identifiants_portail`, la table du secret :
 |---|---|
 | `appareil_chiffre text` | valeur de `_email_2fa_device`, chiffrée |
 | `appareil_expire_le timestamptz` | lue dans `Max-Age` |
-| `association_chiffree text` | connexion entamée : pot à cookies, `_token`, mot de passe en attente |
-| `association_expire_le timestamptz` | +55 min |
+| `association_chiffree text` | connexion entamée : pot à cookies, `_token`, mot de passe en attente — **PR B** |
+| `association_expire_le timestamptz` | +55 min — **PR B** |
 
 La page admin ne charge aucune de ces colonnes, comme `mdp_chiffre`.
 

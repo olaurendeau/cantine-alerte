@@ -170,6 +170,21 @@ export function signauxDe(resultat: ResultatCron): Signal[] {
     });
   }
 
+  const rejetes = parentsDeNature("appareil");
+  if (rejetes.length) {
+    // Le cycle ne se connecte jamais sans appareil valide : une page 2FA ici
+    // veut dire que le portail a refuse un appareil de confiance non expire.
+    // C'est le detecteur d'une confiance liee a l'IP — les IP de Vercel
+    // changent — ou d'un changement de regle cote portail. `error` des la
+    // premiere occurrence : si cela arrive, toute la piste est a revoir.
+    signaux.push({
+      empreinte: "appareil-rejete",
+      niveau: "error",
+      message: `Appareil de confiance refuse par le portail (${rejetes.length} famille(s))`,
+      contexte: { familles: rejetes.length, parentIds: rejetes },
+    });
+  }
+
   const horsCycle = parentsDeNature("cycle");
   if (horsCycle.length) {
     // Le filet de derniere instance d'`executerCron` : une erreur a echappe a

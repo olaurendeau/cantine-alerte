@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm";
-import { chiffrer, VERSION_CLE_COURANTE } from "../crypto.ts";
+import { chiffrer, dechiffrer, VERSION_CLE_COURANTE } from "../crypto.ts";
 import { db } from "../db/index.ts";
 import { destinataires, identifiantsPortail, parents, rappels } from "../db/schema.ts";
 import { expediteur } from "../mail/index.ts";
 import { mailConfirmation, mailRappel } from "../mail/messages.ts";
 import {
+  ErreurDoubleFacteur,
   ErreurIdentifiants,
   aujourdhuiParis,
   configDepuisEnv,
@@ -13,7 +14,7 @@ import {
 } from "../portail/index.ts";
 import { reessayer } from "../reessayer.ts";
 import { decider } from "./decision.ts";
-import { liensPour } from "./verification.ts";
+import { appareilUtilisable, liensPour } from "./verification.ts";
 import {
   ecartesParReglages,
   fenetresPour,
@@ -50,6 +51,43 @@ export type Reglages = {
   /** Semaine visee mise en silence pour la cantine (YYYY-MM-DD), ou null. */
   pauseSemaine: string | null;
 };
+
+/**
+ * Dit au parent pourquoi rien ne se connecte. Le mot de passe n'est pas en
+ * cause : c'est le code 2FA du portail, qu'on ne sait pas encore saisir depuis
+ * l'ecran de reglages.
+ */
+const SANS_APPAREIL =
+  "Le portail 3D Ouest demande désormais un code de vérification envoyé par e-mail. " +
+  "Ce compte n'est pas encore associé au service : rien n'a été tenté, pour ne pas " +
+  "vous envoyer un code inutile. L'association depuis cette page arrive prochainement ; " +
+  "en attendant, contactez l'administrateur du service.";
+
+/**
+ * L'appareil de confiance de ce parent, dechiffre, s'il est encore valable.
+ *
+ * ⚠️ Sans lui, ne PAS appeler le portail : chaque connexion sans appareil
+ * envoie un code 2FA au parent.
+ */
+function appareilDe(
+  parentId: string,
+  ids: { appareilChiffre: string | null; appareilExpireLe: Date | null },
+): string | null {
+  if (!appareilUtilisable({ chiffre: ids.appareilChiffre, expireLe: ids.appareilExpireLe }, new Date())) {
+    return null;
+  }
+  return dechiffrer(ids.appareilChiffre as string, parentId);
+}
+
+/** Un appareil que le portail ne reconnait plus ne doit pas etre represente. */
+async function oublierSiRejete(parentId: string, erreur: unknown) {
+  if (erreur instanceof ErreurDoubleFacteur && erreur.rejete) {
+    await db
+      .update(identifiantsPortail)
+      .set({ appareilChiffre: null, appareilExpireLe: null })
+      .where(eq(identifiantsPortail.parentId, parentId));
+  }
+}
 
 /** Tous les jours de semaine, 0 = lundi. Reference de la conversion positif/negatif. */
 const TOUS_LES_JOURS = [0, 1, 2, 3, 4, 5, 6];
@@ -160,7 +198,27 @@ export async function enregistrerIdentifiants(
   portailEmail: string,
   motDePasse: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const cfg = configDepuisEnv(process.env, { email: portailEmail, password: motDePasse });
+  // Un appareil de confiance vaut pour le compte portail qui l'a obtenu : il ne
+  // sert que si l'identifiant ne change pas — changement de mot de passe, par
+  // exemple. Un nouvel identifiant demande une association.
+  const [existant] = await db
+    .select({
+      portailEmail: identifiantsPortail.portailEmail,
+      appareilChiffre: identifiantsPortail.appareilChiffre,
+      appareilExpireLe: identifiantsPortail.appareilExpireLe,
+    })
+    .from(identifiantsPortail)
+    .where(eq(identifiantsPortail.parentId, parentId));
+  const memeCompte =
+    existant && existant.portailEmail.trim().toLowerCase() === portailEmail.trim().toLowerCase();
+  const appareil = memeCompte ? appareilDe(parentId, existant) : null;
+  if (!appareil) return { ok: false, message: SANS_APPAREIL };
+
+  const cfg = configDepuisEnv(process.env, {
+    email: portailEmail,
+    password: motDePasse,
+    appareil,
+  });
 
   try {
     const aujourdhui = aujourdhuiParis();
@@ -174,9 +232,11 @@ export async function enregistrerIdentifiants(
     );
   } catch (e) {
     const erreur = e as Error;
+    await oublierSiRejete(parentId, erreur);
     if (erreur instanceof ErreurIdentifiants) {
       return { ok: false, message: erreur.messagePortail ?? "Identifiants refuses par le portail." };
     }
+    if (erreur instanceof ErreurDoubleFacteur) return { ok: false, message: SANS_APPAREIL };
     return {
       ok: false,
       message: `Le portail n'a pas repondu : ${erreur.message}. Vos identifiants ne sont pas en cause, reessayez plus tard.`,
@@ -322,16 +382,20 @@ export async function verifierMaintenant(
     .select({
       portailEmail: identifiantsPortail.portailEmail,
       mdpChiffre: identifiantsPortail.mdpChiffre,
+      appareilChiffre: identifiantsPortail.appareilChiffre,
+      appareilExpireLe: identifiantsPortail.appareilExpireLe,
     })
     .from(identifiantsPortail)
     .where(eq(identifiantsPortail.parentId, parentId));
 
   if (!ids) return { ok: false, message: "Aucun identifiant enregistre." };
 
-  const { dechiffrer } = await import("../crypto.ts");
+  const appareil = appareilDe(parentId, ids);
+  if (!appareil) return { ok: false, message: SANS_APPAREIL };
   const cfg = configDepuisEnv(process.env, {
     email: ids.portailEmail,
     password: dechiffrer(ids.mdpChiffre, parentId),
+    appareil,
   });
 
   try {
@@ -377,10 +441,13 @@ export async function verifierMaintenant(
     };
   } catch (e) {
     const erreur = e as Error;
+    await oublierSiRejete(parentId, erreur);
     return {
       ok: false,
       message:
-        erreur instanceof ErreurIdentifiants
+        erreur instanceof ErreurDoubleFacteur
+          ? SANS_APPAREIL
+          : erreur instanceof ErreurIdentifiants
           ? (erreur.messagePortail ?? erreur.message)
           : erreur.message,
     };
@@ -420,6 +487,8 @@ export async function envoyerMailTest(
     .select({
       portailEmail: identifiantsPortail.portailEmail,
       mdpChiffre: identifiantsPortail.mdpChiffre,
+      appareilChiffre: identifiantsPortail.appareilChiffre,
+      appareilExpireLe: identifiantsPortail.appareilExpireLe,
     })
     .from(identifiantsPortail)
     .where(eq(identifiantsPortail.parentId, parentId));
@@ -438,10 +507,12 @@ export async function envoyerMailTest(
     .where(eq(rappels.parentId, parentId));
   const surveillance = await surveillanceDe(parentId);
 
-  const { dechiffrer } = await import("../crypto.ts");
+  const appareil = appareilDe(parentId, ids);
+  if (!appareil) return { ok: false, message: SANS_APPAREIL };
   const cfg = configDepuisEnv(process.env, {
     email: ids.portailEmail,
     password: dechiffrer(ids.mdpChiffre, parentId),
+    appareil,
   });
 
   let r;
@@ -454,10 +525,13 @@ export async function envoyerMailTest(
     );
   } catch (e) {
     const erreur = e as Error;
+    await oublierSiRejete(parentId, erreur);
     return {
       ok: false,
       message:
-        erreur instanceof ErreurIdentifiants
+        erreur instanceof ErreurDoubleFacteur
+          ? SANS_APPAREIL
+          : erreur instanceof ErreurIdentifiants
           ? (erreur.messagePortail ?? erreur.message)
           : erreur.message,
     };

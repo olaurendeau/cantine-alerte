@@ -33,6 +33,12 @@ export type ConfigPortail = {
    * `fenetresPour` qui ne les pose que sur la fenetre cantine.
    */
   exclusions: Set<string>;
+  /**
+   * Valeur du cookie « appareil de confiance » (`COOKIE_APPAREIL`), qui
+   * dispense du code 2FA. Secret au meme titre que le mot de passe : avec lui,
+   * il ouvre le compte. Absent, la connexion s'arrete sur la page du code.
+   */
+  appareil?: string;
 };
 
 /** Trace injectee : le POC ecrivait sur console.error via une globale. */

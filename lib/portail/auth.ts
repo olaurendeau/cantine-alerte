@@ -7,6 +7,18 @@ export const CONNECT = "https://connect1.3douest.com";
 export const urlPortail = (cfg: Pick<ConfigPortail, "portail">) =>
   `https://parents.logiciel-enfance.fr/${cfg.portail}`;
 
+/** Hote du SSO, cle du pot a cookies de la session. */
+const HOTE_CONNECT = new URL(CONNECT).host;
+
+/**
+ * Le cookie « appareil de confiance » du SSO : pose quand le code 2FA est
+ * soumis avec `remember_device=1`, il dispense du code pendant 30 jours
+ * (`Max-Age=2591999`). Il n'est PAS renouvele quand on s'en sert : son
+ * expiration est fixe. Observe le 2026-11-03, et le 2026-11-04 depuis une
+ * autre IP.
+ */
+export const COOKIE_APPAREIL = "_email_2fa_device";
+
 /**
  * Identifiants refuses par le portail, par opposition a une panne technique.
  * Le cron incremente un compteur d'echecs sur ce cas precis, pas sur une
@@ -59,6 +71,51 @@ export class ErreurStructure extends Error {
     this.name = "ErreurStructure";
   }
 }
+
+/**
+ * Le mot de passe est accepte, mais le portail exige le code 2FA envoye par
+ * mail (depuis le 2026-10-08). Ni un refus — le mot de passe est bon — ni une
+ * panne : sans appareil de confiance, rien ne passera sans le parent.
+ *
+ * ⚠️ Jamais rejouee (`nePasRejouer`) : chaque tentative envoie un code de plus
+ * dans la boite du parent.
+ *
+ * `rejete` dit si un appareil de confiance avait ete presente. Vrai, c'est que
+ * le portail ne le reconnait plus alors qu'il n'a pas expire : c'est le
+ * detecteur d'une confiance liee a l'IP ou d'un changement de regle cote
+ * portail, a ne pas confondre avec l'expiration normale au bout de 30 jours.
+ */
+export class ErreurDoubleFacteur extends Error {
+  rejete: boolean;
+
+  constructor(message: string, rejete: boolean) {
+    super(message);
+    this.name = "ErreurDoubleFacteur";
+    this.rejete = rejete;
+  }
+}
+
+/**
+ * Le code 2FA soumis est refuse : le portail a re-rendu sa page de code avec un
+ * message. La connexion entamee reste utilisable avec le nouveau jeton.
+ */
+export class ErreurCodeRefuse extends Error {
+  messagePortail: string | null;
+  attente: AttenteCode;
+
+  constructor(message: string, messagePortail: string | null, attente: AttenteCode) {
+    super(message);
+    this.name = "ErreurCodeRefuse";
+    this.messagePortail = messagePortail;
+    this.attente = attente;
+  }
+}
+
+/**
+ * Une connexion arretee sur la page du code 2FA : de quoi soumettre le code
+ * dans la meme session Laravel.
+ */
+export type AttenteCode = { jeton: string; referer: string };
 
 /**
  * Statuts qui ne disent rien de la structure de la reponse : le portail limite
@@ -138,17 +195,41 @@ export function messagesErreur(html: string): string[] {
   return [...out].slice(0, 5);
 }
 
+/** Un JWT emis par le serveur d'authentification, n'importe ou dans la chaine suivie. */
+const jetonAuth = (etapes: { url: string; res: Response; texte: string }[]): string | undefined =>
+  etapes
+    .flatMap((e) => [
+      ...tokensDe(e.texte),
+      ...tokensDe(e.res.headers.get("location") ?? ""),
+      ...tokensDe(e.url),
+    ])
+    .find((t) => jwtPayload(t).iss === "3douest-auth-server");
+
+const PAGE_CODE = /name=["']email_2fa_code["']/;
+
+/** Ce que rend la soumission du mot de passe, quand ce n'est ni un refus ni une panne. */
+type IssueMotDePasse =
+  | { etat: "connecte"; auth: string }
+  | { etat: "code_requis"; attente: AttenteCode };
+
 /**
- * Authentification en 4 sauts entre le SSO Laravel (connect1.3douest.com) et
- * l'API metier (gestion.logiciel-enfance.fr). Retourne le Bearer applicatif.
+ * Sauts 1 a 3 : du token d'amorcage a la soumission du mot de passe.
+ *
+ * Rend un JWT, ou la page du code 2FA ; leve sur tout le reste. Partage par
+ * `login` (le cron, qui ne peut pas saisir de code) et `demanderCode`
+ * (l'association, qui le peut).
  */
-export async function login(
+async function soumettreMotDePasse(
   cfg: ConfigPortail,
   session: Session,
-  trace: Logger = silencieux,
-): Promise<string> {
+  trace: Logger,
+): Promise<IssueMotDePasse> {
   const { go, goSuivi } = session;
   const redirectUri = urlPortail(cfg);
+
+  // L'appareil de confiance doit etre dans le pot avant le saut 3, ou le SSO
+  // le lit. Le poser des le debut est sans effet sur les sauts 1 et 2.
+  if (cfg.appareil) session.poser(HOTE_CONNECT, COOKIE_APPAREIL, cfg.appareil);
 
   trace("[1] token d'amorcage");
   let res = await go(`${API}/api/redirecturi`, {
@@ -208,12 +289,7 @@ export async function login(
   // Le code HTTP ne distingue pas succes et echec : sur echec le portail
   // renvoie un 302 vers /connexion, donc un corps quasi vide. Le verdict se
   // prend sur la presence d'un JWT emis par le serveur d'authentification.
-  const candidats = etapes.flatMap((e) => [
-    ...tokensDe(e.texte),
-    ...tokensDe(e.res.headers.get("location") ?? ""),
-    ...tokensDe(e.url),
-  ]);
-  const auth = candidats.find((t) => jwtPayload(t).iss === "3douest-auth-server");
+  const auth = jetonAuth(etapes);
   if (!auth) {
     // ⚠️ Un 429 ou un 5xx est une panne, QUOI QUE raconte la page servie.
     // Ce garde est inconditionnel et doit le rester : les pages d'erreur des
@@ -238,15 +314,17 @@ export async function login(
     }
 
     // ⚠️ Observe le 2026-11-03 : le SSO exige desormais un code a 6 chiffres
-    // envoye par mail apres le mot de passe. Le mot de passe a donc ete ACCEPTE.
-    // Structurel et non temporaire : rejouer n'y changera rien, et chaque
-    // tentative envoie un code de plus dans la boite du parent.
-    if (etapes.some((e) => /name=["']email_2fa_code["']/.test(e.texte))) {
-      throw new ErreurStructure(
-        "Le portail exige un code de verification envoye par email (2FA) apres le " +
-          "mot de passe. Le mot de passe a ete accepte ; la connexion automatique " +
-          "n'est plus possible en l'etat.",
-      );
+    // envoye par mail apres le mot de passe. Le mot de passe a donc ete ACCEPTE,
+    // et le code est deja parti dans la boite du parent.
+    const pageCode = etapes.find((e) => PAGE_CODE.test(e.texte));
+    if (pageCode) {
+      const jeton = champCache(pageCode.texte, "_token");
+      if (!jeton) {
+        throw new ErreurStructure(
+          "Page du code 2FA sans _token : le formulaire du portail a probablement change.",
+        );
+      }
+      return { etat: "code_requis", attente: { jeton, referer: `${CONNECT}/connexion?${qs}` } };
     }
 
     const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));
@@ -285,8 +363,18 @@ export async function login(
     );
   }
 
+  return { etat: "connecte", auth };
+}
+
+/** Saut 4 : le JWT du SSO contre le Bearer applicatif. */
+async function echangerBearer(
+  cfg: ConfigPortail,
+  session: Session,
+  auth: string,
+  trace: Logger,
+): Promise<string> {
   trace("[4] echange contre le Bearer");
-  res = await go(`${API}/api/login`, {
+  const res = await session.go(`${API}/api/login`, {
     method: "POST",
     headers: { bdd: cfg.bdd, "content-type": "application/json" },
     body: JSON.stringify({ token: auth }),
@@ -305,4 +393,115 @@ export async function login(
     throw new ErreurStructure(`Reponse /api/login inattendue : ${brut.slice(0, 300)}`);
   }
   return out.data.token;
+}
+
+/**
+ * Authentification en 4 sauts entre le SSO Laravel (connect1.3douest.com) et
+ * l'API metier (gestion.logiciel-enfance.fr). Retourne le Bearer applicatif.
+ *
+ * Sans personne pour saisir un code : la page 2FA leve `ErreurDoubleFacteur`.
+ * C'est `cfg.appareil` qui permet de passer, cf. `COOKIE_APPAREIL`.
+ */
+export async function login(
+  cfg: ConfigPortail,
+  session: Session,
+  trace: Logger = silencieux,
+): Promise<string> {
+  const issue = await soumettreMotDePasse(cfg, session, trace);
+  if (issue.etat === "code_requis") {
+    const rejete = Boolean(cfg.appareil);
+    throw new ErreurDoubleFacteur(
+      rejete
+        ? "Le portail redemande le code 2FA malgre un appareil de confiance non expire : " +
+            "il ne le reconnait plus."
+        : "Le portail exige le code 2FA envoye par email : aucun appareil de confiance " +
+            "n'est associe a ce compte.",
+      rejete,
+    );
+  }
+  return echangerBearer(cfg, session, issue.auth, trace);
+}
+
+/** Un appareil de confiance obtenu, a conserver chiffre. */
+export type Appareil = { valeur: string; expireLe: Date | null };
+
+/**
+ * Premier temps de l'association : mot de passe, puis arret sur la page du
+ * code. Le portail envoie le code a ce moment-la.
+ *
+ * Si le portail n'exige pas de code, la connexion est deja complete.
+ */
+export async function demanderCode(
+  cfg: ConfigPortail,
+  session: Session,
+  trace: Logger = silencieux,
+): Promise<{ etat: "connecte"; bearer: string } | { etat: "code_requis"; attente: AttenteCode }> {
+  const issue = await soumettreMotDePasse({ ...cfg, appareil: undefined }, session, trace);
+  if (issue.etat === "code_requis") return issue;
+  return { etat: "connecte", bearer: await echangerBearer(cfg, session, issue.auth, trace) };
+}
+
+/**
+ * Second temps : le code, dans la MEME session que `demanderCode`, avec
+ * `remember_device=1`. Rend le Bearer et l'appareil de confiance pose par le SSO.
+ *
+ * Le refus d'un code se lit comme celui d'un mot de passe : page du code
+ * re-rendue ET message du portail → `ErreurCodeRefuse`. Sans message, c'est une
+ * page qu'on ne sait pas lire, meme regle qu'au saut 3.
+ */
+export async function validerCode(
+  cfg: ConfigPortail,
+  session: Session,
+  attente: AttenteCode,
+  code: string,
+  trace: Logger = silencieux,
+): Promise<{ bearer: string; appareil: Appareil }> {
+  trace("[3b] soumission du code 2FA");
+  const etapes = await session.goSuivi(`${CONNECT}/connexion`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: CONNECT,
+      referer: attente.referer,
+    },
+    body: new URLSearchParams({
+      _token: attente.jeton,
+      email_2fa_code: code,
+      remember_device: "1",
+    }).toString(),
+  });
+  if (etapes[0].res.status === 419) {
+    throw new Error("419 : la connexion entamee a expire cote Laravel, redemander un code.");
+  }
+
+  const auth = jetonAuth(etapes);
+  if (!auth) {
+    const statut = etapes[etapes.length - 1].res.status;
+    if (statut === 429 || statut >= 500) refuserSiIndisponible(statut, "la soumission du code");
+    const page = etapes.find((e) => PAGE_CODE.test(e.texte));
+    const erreurs = etapes.flatMap((e) => messagesErreur(e.texte));
+    const jeton = page ? champCache(page.texte, "_token") : null;
+    if (page && jeton && erreurs.length > 0) {
+      throw new ErreurCodeRefuse("Code 2FA refuse par le portail.", erreurs[0], {
+        ...attente,
+        jeton,
+      });
+    }
+    refuserSiIndisponible(statut, "la soumission du code");
+    throw new ErreurStructure(
+      `Reponse inattendue a la soumission du code 2FA (HTTP ${statut}) : ni jeton ni message.`,
+    );
+  }
+
+  const appareil = session.cookie(HOTE_CONNECT, COOKIE_APPAREIL);
+  if (!appareil) {
+    // Connecte cette fois-ci, mais rien qui dispense du code demain : le cron
+    // retomberait sur la page 2FA des le premier passage.
+    throw new ErreurStructure(
+      `Code accepte, mais le portail n'a pas pose de cookie ${COOKIE_APPAREIL} : ` +
+        "l'appareil de confiance n'est pas memorise.",
+    );
+  }
+  const bearer = await echangerBearer(cfg, session, auth, trace);
+  return { bearer, appareil: { valeur: appareil.valeur, expireLe: appareil.expireLe } };
 }
