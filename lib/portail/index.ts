@@ -174,7 +174,7 @@ export const PORTAIL_DEFAUT = "argentiere";
 /** Config depuis l'environnement, pour le CLI et les valeurs par defaut de la collectivite. */
 export function configDepuisEnv(
   env: NodeJS.ProcessEnv,
-  identifiants?: { email: string; password: string },
+  identifiants?: { email: string; password: string; appareil?: string },
 ): ConfigPortail {
   const email = identifiants?.email ?? env.CANTINE_EMAIL;
   const password = identifiants?.password ?? env.CANTINE_PASSWORD;
@@ -197,5 +197,8 @@ export function configDepuisEnv(
       soir: new RegExp(env.CANTINE_PRESTATION_SOIR ?? "Gsoir|Garderie soir", "i"),
     },
     exclusions: exclusionsDepuisEnv(env),
+    // Le CLI lit l'appareil dans l'environnement, comme les identifiants. Le
+    // cron, lui, passe ceux de la famille : jamais ceux de l'environnement.
+    appareil: identifiants ? identifiants.appareil : env.CANTINE_APPAREIL || undefined,
   };
 }
