@@ -6,6 +6,7 @@
  *
  *   node scripts/associer.ts --compte moi@exemple.fr
  *   node scripts/associer.ts --compte moi@exemple.fr --code-fichier /tmp/code.txt
+ *   node scripts/associer.ts --compte moi@exemple.fr --mot-de-passe-env
  *
  * `--compte` est l'adresse de connexion au service (`parents.email`), pas celle
  * du portail. Le code est lu sur l'entree standard, ou dans le fichier designe
@@ -17,6 +18,13 @@
  * quoi le cron ne pourra pas dechiffrer l'appareil. Chaque lancement envoie un
  * code au parent.
  *
+ * `--mot-de-passe-env` prend le mot de passe du portail dans CANTINE_PASSWORD
+ * au lieu de la base, et le rechiffre avec la cle courante. C'est le chemin de
+ * rotation de CANTINE_CLE_CHIFFREMENT : une cle perdue rend `mdp_chiffre`
+ * illisible, et l'ecran des reglages refuse d'enregistrer des identifiants
+ * tant que le compte n'a pas d'appareil. L'adresse portail reste celle de la
+ * base ; CANTINE_EMAIL, s'il est pose, doit lui correspondre.
+ *
  * N'affiche jamais ni le mot de passe ni la valeur du cookie.
  */
 
@@ -27,7 +35,7 @@ import { chargerEnv } from "./env.ts";
 
 chargerEnv();
 
-const { chiffrer, dechiffrer } = await import("../lib/crypto.ts");
+const { chiffrer, dechiffrer, VERSION_CLE_COURANTE } = await import("../lib/crypto.ts");
 const { db } = await import("../lib/db/index.ts");
 const { identifiantsPortail, parents } = await import("../lib/db/schema.ts");
 const { ErreurCodeRefuse, configDepuisEnv, demanderCode, nouvelleSession, validerCode } =
@@ -45,6 +53,7 @@ if (!compte) {
 }
 const fichierCode = arg("code-fichier");
 const verbeux = process.argv.includes("--verbose");
+const motDePasseEnv = process.argv.includes("--mot-de-passe-env");
 
 /**
  * Le code arrive ~15 min apres la demande et vaut 60 min ; la session Laravel
@@ -68,10 +77,22 @@ if (!ligne) {
   process.exit(1);
 }
 
-const cfg = configDepuisEnv(process.env, {
-  email: ligne.portailEmail,
-  password: dechiffrer(ligne.mdpChiffre, ligne.parentId),
-});
+function motDePasse(): string {
+  if (!motDePasseEnv) return dechiffrer(ligne.mdpChiffre, ligne.parentId);
+  const mdp = process.env.CANTINE_PASSWORD;
+  if (!mdp) {
+    console.error("--mot-de-passe-env : CANTINE_PASSWORD est vide.");
+    process.exit(2);
+  }
+  const email = process.env.CANTINE_EMAIL?.trim().toLowerCase();
+  if (email && email !== ligne.portailEmail.trim().toLowerCase()) {
+    console.error("--mot-de-passe-env : CANTINE_EMAIL ne correspond pas a l'adresse portail en base.");
+    process.exit(2);
+  }
+  return mdp;
+}
+const password = motDePasse();
+const cfg = configDepuisEnv(process.env, { email: ligne.portailEmail, password });
 const trace = verbeux ? (...a: unknown[]) => console.error("  ·", ...a) : () => {};
 // Toute l'association dans une seule session : le code n'est valable que pour
 // la session Laravel qui l'a demande. Le budget par defaut (45 s) est fait pour
@@ -140,6 +161,11 @@ const { appareil } = obtenu;
 await db
   .update(identifiantsPortail)
   .set({
+    // Le mot de passe vient de reussir la connexion : le rechiffrer avec la
+    // cle courante est sans risque, et c'est tout l'objet de la rotation.
+    ...(motDePasseEnv
+      ? { mdpChiffre: chiffrer(password, ligne.parentId), cleVersion: VERSION_CLE_COURANTE }
+      : {}),
     appareilChiffre: chiffrer(appareil.valeur, ligne.parentId),
     appareilExpireLe: appareil.expireLe,
     verifieLe: new Date(),
