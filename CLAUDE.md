@@ -459,6 +459,18 @@ Points de conception qui ont une raison d'être :
   appareil présenté puis refusé est **effacé** (un seul code parasite) et lève le signal
   `appareil-rejete` en `error`. Même garde dans « vérifier maintenant », le mail de test et
   l'enregistrement des identifiants.
+- ⚠️ **L'association se fait en deux requêtes, et la connexion entamée est conservée en base.**
+  Le code 2FA arrive ~15 min après la demande, bien au-delà de toute fonction serverless : la
+  première requête arrête la connexion sur la page du code, exporte le pot à cookies
+  (`session.exporter()`) et le range, chiffré avec le `_token` et les identifiants saisis, dans
+  `associations_portail` ; la seconde le recharge (`nouvelleSession({ pot })`) et soumet le code
+  (`lib/service/association.ts`). **Table à part** : un parent qui s'inscrit n'a pas encore de
+  ligne d'identifiants, et le mot de passe saisi n'entre dans `identifiants_portail` qu'une fois
+  le code accepté. Une demande vaut 55 min (code : 60, session Laravel : 120), se redemande au
+  plus toutes les 2 min — chaque demande est une connexion depuis l'IP partagée du service —
+  et le cron purge les demandes expirées, ce que `/confidentialite` promet. Un appareil encore
+  valide dispense de tout cela tant que l'identifiant portail ne change pas : changer de mot de
+  passe ne redemande pas de code.
 - **Ne désactiver un compte que sur identifiants refusés.** Une panne du portail ou un `429` ne doit
   jamais suspendre un compte valide, sinon une indisponibilité couperait le service pour tout le
   monde. Le mail d'échec technique dit d'ailleurs explicitement au parent que ses identifiants ne

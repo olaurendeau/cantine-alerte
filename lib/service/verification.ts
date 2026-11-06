@@ -1,7 +1,14 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { dechiffrer } from "../crypto.ts";
 import { db } from "../db/index.ts";
-import { destinataires, envois, identifiantsPortail, parents, rappels } from "../db/schema.ts";
+import {
+  associationsPortail,
+  destinataires,
+  envois,
+  identifiantsPortail,
+  parents,
+  rappels,
+} from "../db/schema.ts";
 import { urlDesabonnement } from "../auth/desabonnement.ts";
 import { urlPause } from "../auth/pause.ts";
 import { expediteur, type Expediteur } from "../mail/index.ts";
@@ -219,6 +226,16 @@ export async function executerCron({
     `cron ${iso(aujourdhui)} : echeance ${iso(echeance)} (J-${restants}), ` +
       `semaine visee ${iso(semaine)}`,
   );
+
+  // Une association abandonnee garde, chiffres, un mot de passe jamais valide
+  // et une session Laravel : `/confidentialite` promet de l'effacer passe son
+  // delai, et seul ce passage quotidien le garantit pour qui ne revient pas.
+  // Defensif : un nettoyage rate ne doit couter le rappel de personne.
+  try {
+    await db.delete(associationsPortail).where(lt(associationsPortail.expireLe, maintenant));
+  } catch (e) {
+    console.error("nettoyage des associations expirees impossible :", (e as Error).message);
+  }
 
   // La pause n'est PAS filtree ici : elle ne couvre que la cantine, et une
   // famille en pause reste interrogee pour son periscolaire. C'est

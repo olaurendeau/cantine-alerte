@@ -17,9 +17,11 @@ import {
   actionIdentifiants,
   actionPause,
   actionRappels,
+  actionRenvoyerCode,
   actionReprendre,
   actionSurveillance,
   actionTesterMail,
+  actionValiderCode,
   actionVerifier,
 } from "./actions.ts";
 import { GrilleSurveillance } from "./grille-surveillance.tsx";
@@ -78,7 +80,7 @@ export default async function Reglages({
 
   const global = etatGlobal(
     [
-      identifiants.ton === "attention" && "vos identifiants du portail",
+      identifiants.ton === "attention" && "la connexion au portail",
       destinataires.ton === "attention" && "les destinataires des rappels",
       surveillance.ton === "attention" && "les jours à surveiller",
       rappels.ton === "attention" && "les jours de rappel",
@@ -89,6 +91,13 @@ export default async function Reglages({
   // chose cloche : replier sur une erreur cacherait le champ a corriger.
   const ouverte = (nom: string, resume?: { ton: string }) =>
     ouvrir === nom || resume?.ton === "attention";
+
+  // Des instants reels, lus a Paris : Vercel tourne en UTC.
+  const heure = (d: Date) =>
+    d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
+  const jour = (d: Date) =>
+    d.toLocaleDateString("fr-FR", { day: "numeric", month: "long", timeZone: "Europe/Paris" });
+  const { association, appareil } = reglages;
 
   return (
     <>
@@ -122,15 +131,56 @@ export default async function Reglages({
       </div>
 
       <Section
-        titre="Identifiants du portail"
+        titre="Connexion au portail"
         resume={identifiants}
         ouvert={ouverte("identifiants", identifiants)}
       >
         <p className="doux">
-          Nécessaires pour consulter vos réservations à votre place. Le mot de passe est chiffré
-          et n&apos;est jamais réaffiché : pour le changer, saisissez-en un nouveau.{" "}
-          <a href="/confidentialite">En savoir plus</a>
+          Vos identifiants du portail sont nécessaires pour consulter vos réservations à votre
+          place. Le mot de passe est chiffré et n&apos;est jamais réaffiché : pour le changer,
+          saisissez-en un nouveau. <a href="/confidentialite">En savoir plus</a>
         </p>
+        <p className="doux">
+          Le portail demande aussi un <strong>code de vérification</strong> envoyé par e-mail.
+          Vous le saisissez ici une fois, et le service est associé à votre compte pour
+          30 jours ; il faudra ensuite saisir un nouveau code.
+        </p>
+
+        {association && (
+          <>
+            <div className="message">
+              Un code a été envoyé à {heure(association.demandeeLe)} à l&apos;adresse de votre
+              compte du portail. Il vient de 3douest.com et peut mettre une quinzaine de minutes
+              à arriver : pensez à regarder dans vos courriers indésirables. Vous pouvez fermer
+              cette page et revenir, la demande reste valable jusqu&apos;à{" "}
+              {heure(association.expireLe)}.
+            </div>
+            <form action={actionValiderCode}>
+              <label htmlFor="code">Code de vérification</label>
+              <input
+                id="code"
+                name="code"
+                type="text"
+                className="champ-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="6 chiffres"
+                required
+              />
+              <button type="submit">Valider le code</button>
+            </form>
+            <form action={actionRenvoyerCode} style={{ marginTop: "0.75rem" }}>
+              <button type="submit" className="secondaire">
+                Je n&apos;ai rien reçu : renvoyer un code
+              </button>
+            </form>
+            <p className="doux" style={{ marginTop: "1.25rem" }}>
+              Vous vous êtes trompé d&apos;identifiant ou de mot de passe ? Corrigez-les
+              ci-dessous : un nouveau code sera envoyé.
+            </p>
+          </>
+        )}
+
         <form action={actionIdentifiants}>
           <label htmlFor="portailEmail">Identifiant portail</label>
           <input
@@ -149,13 +199,18 @@ export default async function Reglages({
             placeholder={reglages.motDePasseEnregistre ? "•••••••• (enregistré)" : ""}
             required
           />
-          <button type="submit">Vérifier et enregistrer</button>
+          {/* Avec un appareil valide, changer le mot de passe ne demande pas de
+              code ; changer d'identifiant, si, et le service le dira. */}
+          <button type="submit" className={association ? "secondaire" : undefined}>
+            {appareil ? "Vérifier et enregistrer" : "Envoyer le code de vérification"}
+          </button>
         </form>
 
         <p className="doux" style={{ marginTop: "1rem", marginBottom: 0 }}>
           {reglages.verifieLe
             ? `Dernière vérification réussie le ${reglages.verifieLe.toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}.`
             : "Aucune vérification réussie pour l'instant."}
+          {appareil?.expireLe && ` Associé jusqu'au ${jour(appareil.expireLe)}.`}
           {reglages.derniereErreur && ` Dernière erreur : ${reglages.derniereErreur}`}
         </p>
       </Section>

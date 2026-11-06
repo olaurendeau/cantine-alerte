@@ -112,6 +112,18 @@ export class ErreurCodeRefuse extends Error {
 }
 
 /**
+ * La connexion entamee n'est plus reconnue par Laravel (419) : session ou CSRF
+ * expires entre la demande du code et sa saisie. Rien a rejouer, il faut un
+ * nouveau code.
+ */
+export class ErreurConnexionExpiree extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ErreurConnexionExpiree";
+  }
+}
+
+/**
  * Une connexion arretee sur la page du code 2FA : de quoi soumettre le code
  * dans la meme session Laravel.
  */
@@ -471,7 +483,9 @@ export async function validerCode(
     }).toString(),
   });
   if (etapes[0].res.status === 419) {
-    throw new Error("419 : la connexion entamee a expire cote Laravel, redemander un code.");
+    throw new ErreurConnexionExpiree(
+      "419 : la connexion entamee a expire cote Laravel, redemander un code.",
+    );
   }
 
   const auth = jetonAuth(etapes);

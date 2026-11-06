@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { fermerSession, sessionCourante } from "../../lib/auth/session.ts";
 import { jourDepuisIso } from "../../lib/portail/dates.ts";
 import { aujourdhuiParis } from "../../lib/portail/dates.ts";
+import { renvoyerCode, validerAssociation, type Issue } from "../../lib/service/association.ts";
 import {
   enregistrerDestinataires,
   enregistrerIdentifiants,
@@ -75,11 +76,57 @@ export async function actionIdentifiants(formData: FormData) {
     retour({ erreur: "Renseignez l'identifiant et le mot de passe du portail." }, "identifiants");
   }
 
-  const r = await enregistrerIdentifiants(session.parentId, portailEmail, motDePasse);
-  retour(
-    r.ok ? { succes: "Identifiants verifies et enregistres." } : { erreur: r.message },
-    "identifiants",
+  retourAssociation(await enregistrerIdentifiants(session.parentId, portailEmail, motDePasse));
+}
+
+export async function actionValiderCode(formData: FormData) {
+  const session = await exigerSession();
+  retourAssociation(
+    await validerAssociation(session.parentId, String(formData.get("code") ?? "")),
   );
+}
+
+export async function actionRenvoyerCode() {
+  const session = await exigerSession();
+  retourAssociation(await renvoyerCode(session.parentId));
+}
+
+/**
+ * Le retour commun aux trois temps de l'association. La section reste ouverte
+ * tant qu'un code est attendu : c'est son resume qui le demande.
+ */
+function retourAssociation(r: Issue): never {
+  if (!r.ok) {
+    // Ni la faute du parent ni un hoquet du portail : le parent lit un
+    // message, l'exploitation doit le savoir.
+    if (r.incident) Sentry.captureException(r.incident);
+    retour({ erreur: r.message }, "identifiants");
+  }
+  if (r.etat === "code_envoye") {
+    retour(
+      {
+        succes:
+          "Le portail vient de vous envoyer un code de vérification par e-mail. Saisissez-le " +
+          "ci-dessous.",
+      },
+      "identifiants",
+      true,
+    );
+  }
+  if (r.etat === "associe") {
+    const jusquau = r.expireLe
+      ? ` jusqu'au ${r.expireLe.toLocaleDateString("fr-FR", { day: "numeric", month: "long", timeZone: "Europe/Paris" })}`
+      : "";
+    retour(
+      {
+        succes:
+          `Compte associé : le service peut consulter vos réservations${jusquau}. Il faudra ` +
+          "ensuite saisir un nouveau code, le portail ne prolonge pas l'association.",
+      },
+      "identifiants",
+    );
+  }
+  retour({ succes: "Identifiants vérifiés et enregistrés." }, "identifiants");
 }
 
 export async function actionDestinataires(formData: FormData) {

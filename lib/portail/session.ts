@@ -45,6 +45,14 @@ export type Session = ReturnType<typeof nouvelleSession>;
 export type Cookie = { valeur: string; expireLe: Date | null };
 
 /**
+ * Le pot a cookies d'une session, sous une forme que JSON sait porter. C'est ce
+ * qui permet de reprendre une connexion entamee dans une autre requete : en
+ * serverless rien ne survit entre la demande du code 2FA et sa saisie, un quart
+ * d'heure plus tard. ⚠️ Contient des cookies de session vivants : a chiffrer.
+ */
+export type PotExporte = [hote: string, cookies: [nom: string, valeur: string, expireLe: string | null][]][];
+
+/**
  * L'expiration annoncee par un Set-Cookie. `Max-Age` prime sur `Expires`,
  * comme dans un navigateur ; ni l'un ni l'autre, c'est un cookie de session.
  */
@@ -79,9 +87,19 @@ export function expirationDe(attributs: string[], maintenant = new Date()): Date
  */
 export function nouvelleSession(
   trace: Logger = silencieux,
-  { budgetMs = BUDGET_SESSION_MS }: { budgetMs?: number } = {},
+  { budgetMs = BUDGET_SESSION_MS, pot: repris }: { budgetMs?: number; pot?: PotExporte } = {},
 ) {
-  const pot = new Map<string, Map<string, Cookie>>();
+  const pot = new Map<string, Map<string, Cookie>>(
+    (repris ?? []).map(([hote, cookies]) => [
+      hote,
+      new Map(
+        cookies.map(([nom, valeur, expireLe]) => [
+          nom,
+          { valeur, expireLe: expireLe ? new Date(expireLe) : null },
+        ]),
+      ),
+    ]),
+  );
   // Un seul signal pour toute la session : il court des la creation, donc le
   // temps deja consomme par les sauts precedents n'est pas remis a zero.
   const echeanceSession = AbortSignal.timeout(budgetMs);
@@ -156,5 +174,12 @@ export function nouvelleSession(
     return etapes;
   }
 
-  return { go, goSuivi, cookie, poser };
+  /** Le pot, pour `nouvelleSession({ pot })`. Ne jamais le journaliser. */
+  const exporter = (): PotExporte =>
+    [...pot].map(([hote, cookies]) => [
+      hote,
+      [...cookies].map(([nom, c]) => [nom, c.valeur, c.expireLe?.toISOString() ?? null]),
+    ]);
+
+  return { go, goSuivi, cookie, poser, exporter };
 }

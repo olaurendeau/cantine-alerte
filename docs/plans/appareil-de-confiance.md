@@ -1,6 +1,7 @@
 # Appareil de confiance : se reconnecter malgré le code 2FA
 
-> Révision 2 (2026-11-04) — questions ouvertes tranchées, cf. fin du document. Fait suite à
+> Révision 3 (2026-11-06) — PR A livrée (#9, #10), compte administrateur associé en prod ;
+> la PR B est scindée, cf. « Livraison ». Révision 2 (2026-11-04) : questions tranchées. Fait suite à
 > `docs/plans/portail-2fa.md` (PR #7), qui empêche la 2FA de couper les comptes mais ne
 > rétablit pas la connexion.
 
@@ -146,8 +147,11 @@ Sur `identifiants_portail`, la table du secret :
 |---|---|
 | `appareil_chiffre text` | valeur de `_email_2fa_device`, chiffrée |
 | `appareil_expire_le timestamptz` | lue dans `Max-Age` |
-| `association_chiffree text` | connexion entamée : pot à cookies, `_token`, mot de passe en attente — **PR B** |
-| `association_expire_le timestamptz` | +55 min — **PR B** |
+
+La connexion entamée vit finalement dans **sa propre table**, `associations_portail`
+(`chiffree`, `demandee_le`, `expire_le` ; migration `0006`), et non dans deux colonnes de plus :
+un parent qui s'inscrit n'a pas encore de ligne d'identifiants, dont le mot de passe est
+`NOT NULL`, et il ne doit pas en avoir avant que le code soit accepté.
 
 La page admin ne charge aucune de ces colonnes, comme `mdp_chiffre`.
 
@@ -214,7 +218,19 @@ cet appareil), sa durée (30 jours), son chiffrement.
    `scripts/associer.ts`. Association du compte administrateur en prod, puis lecture du cron du
    lendemain. Sans appareil, le statut `appareil_a_associer` est compté mais aucun mail ne part
    encore.
-3. Si la connexion passe : PR B, étapes 4 à 8.
+3. Si la connexion passe : PR B, étapes 4 à 8, en deux temps.
+   - **B1 — l'association depuis les réglages** : `exporter()`, `associations_portail`,
+     `lib/service/association.ts`, la section « Connexion au portail », son résumé (associé
+     jusqu'au…, à renouveler sous 5 jours, à associer, code attendu), la page
+     `/confidentialite`, la purge quotidienne des demandes expirées.
+   - **B2 — les mails** : `mailAppareilAAssocier`, relances J-5 / J-1 au titulaire,
+     signal `appareils-tous-expires`.
+
+   **État au 2026-11-06.** La clé de chiffrement de prod étant illisible sur Vercel (variable
+   sensible), elle a été remplacée ; la prod ne comptait qu'un jeu d'identifiants, rechiffré par
+   `associer.ts --mot-de-passe-env` (#10). Compte administrateur associé le 2026-11-06 à 10 h,
+   appareil valable jusqu'au 2026-12-06. L'étape 0b — connexion depuis Vercel — attend le
+   premier cron ou un « vérifier maintenant ».
 4. Au déploiement de la PR B, chaque famille sans appareil reçoit **un** mail « associez le
    service ». Aujourd'hui, une seule famille est inscrite.
 

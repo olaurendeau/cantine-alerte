@@ -15,6 +15,7 @@ import {
 import { reessayer } from "../reessayer.ts";
 import { decider } from "./decision.ts";
 import { appareilUtilisable, liensPour } from "./verification.ts";
+import { associationEnCours, demanderAssociation, type Issue } from "./association.ts";
 import {
   ecartesParReglages,
   fenetresPour,
@@ -50,18 +51,24 @@ export type Reglages = {
   joursSoir: number[];
   /** Semaine visee mise en silence pour la cantine (YYYY-MM-DD), ou null. */
   pauseSemaine: string | null;
+  /**
+   * L'appareil de confiance s'il est utilisable, null sinon. Jamais sa valeur :
+   * l'ecran n'a besoin que de sa date de fin, quand le portail en donne une.
+   */
+  appareil: { expireLe: Date | null } | null;
+  /** Un code demande et pas encore saisi. */
+  association: { demandeeLe: Date; expireLe: Date } | null;
 };
 
 /**
  * Dit au parent pourquoi rien ne se connecte. Le mot de passe n'est pas en
- * cause : c'est le code 2FA du portail, qu'on ne sait pas encore saisir depuis
- * l'ecran de reglages.
+ * cause : c'est le code 2FA du portail, a saisir une fois depuis la section
+ * « Connexion au portail ».
  */
 const SANS_APPAREIL =
-  "Le portail 3D Ouest demande désormais un code de vérification envoyé par e-mail. " +
-  "Ce compte n'est pas encore associé au service : rien n'a été tenté, pour ne pas " +
-  "vous envoyer un code inutile. L'association depuis cette page arrive prochainement ; " +
-  "en attendant, contactez l'administrateur du service.";
+  "Le portail 3D Ouest demande un code de vérification envoyé par e-mail, et ce compte " +
+  "n'est pas encore associé au service : rien n'a été tenté, pour ne pas vous envoyer un " +
+  "code inutile. Associez-le depuis la section « Connexion au portail ».";
 
 /**
  * L'appareil de confiance de ce parent, dechiffre, s'il est encore valable.
@@ -105,9 +112,15 @@ export async function chargerReglages(parentId: string): Promise<Reglages | null
       verifieLe: identifiantsPortail.verifieLe,
       echecsConsecutifs: identifiantsPortail.echecsConsecutifs,
       derniereErreur: identifiantsPortail.derniereErreur,
+      appareilChiffre: identifiantsPortail.appareilChiffre,
+      appareilExpireLe: identifiantsPortail.appareilExpireLe,
     })
     .from(identifiantsPortail)
     .where(eq(identifiantsPortail.parentId, parentId));
+  const maintenant = new Date();
+  const appareilValide =
+    ids &&
+    appareilUtilisable({ chiffre: ids.appareilChiffre, expireLe: ids.appareilExpireLe }, maintenant);
 
   const [rap] = await db
     .select({
@@ -141,6 +154,8 @@ export async function chargerReglages(parentId: string): Promise<Reglages | null
     joursMatin: rap?.joursMatin ?? [],
     joursSoir: rap?.joursSoir ?? [],
     pauseSemaine: rap?.pauseSemaine ?? null,
+    appareil: appareilValide ? { expireLe: ids.appareilExpireLe } : null,
+    association: await associationEnCours(parentId, maintenant),
   };
 }
 
@@ -192,12 +207,16 @@ function fenetresDeControle(aujourdhui: Date, reglages: ReglagesSurveillance) {
  * Valider tout de suite evite de decouvrir l'echec au premier cron, quand le
  * parent croit deja etre couvert. Le message renvoye est celui du portail
  * lui-meme ("Mauvais email et/ou mot de passe.").
+ *
+ * Sans appareil de confiance utilisable pour ce compte portail, c'est une
+ * association qui demarre : le portail envoie un code, et les identifiants ne
+ * seront enregistres qu'une fois ce code saisi (`validerAssociation`).
  */
 export async function enregistrerIdentifiants(
   parentId: string,
   portailEmail: string,
   motDePasse: string,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<Issue> {
   // Un appareil de confiance vaut pour le compte portail qui l'a obtenu : il ne
   // sert que si l'identifiant ne change pas — changement de mot de passe, par
   // exemple. Un nouvel identifiant demande une association.
@@ -212,7 +231,7 @@ export async function enregistrerIdentifiants(
   const memeCompte =
     existant && existant.portailEmail.trim().toLowerCase() === portailEmail.trim().toLowerCase();
   const appareil = memeCompte ? appareilDe(parentId, existant) : null;
-  if (!appareil) return { ok: false, message: SANS_APPAREIL };
+  if (!appareil) return demanderAssociation(parentId, portailEmail, motDePasse);
 
   const cfg = configDepuisEnv(process.env, {
     email: portailEmail,
@@ -236,7 +255,17 @@ export async function enregistrerIdentifiants(
     if (erreur instanceof ErreurIdentifiants) {
       return { ok: false, message: erreur.messagePortail ?? "Identifiants refuses par le portail." };
     }
-    if (erreur instanceof ErreurDoubleFacteur) return { ok: false, message: SANS_APPAREIL };
+    if (erreur instanceof ErreurDoubleFacteur) {
+      // L'appareil vient d'etre efface : renvoyer le formulaire demarrera une
+      // association. On ne l'enchaine pas d'office — ce serait un second code
+      // dans la boite du parent, le refus en ayant deja fait partir un.
+      return {
+        ok: false,
+        message:
+          "Le portail ne reconnaît plus l'association de ce service. Renvoyez le formulaire : " +
+          "vous recevrez un code pour l'associer à nouveau.",
+      };
+    }
     return {
       ok: false,
       message: `Le portail n'a pas repondu : ${erreur.message}. Vos identifiants ne sont pas en cause, reessayez plus tard.`,
@@ -260,7 +289,7 @@ export async function enregistrerIdentifiants(
 
   // Des identifiants a nouveau valides reactivent un compte suspendu.
   await db.update(parents).set({ actif: true }).where(eq(parents.id, parentId));
-  return { ok: true };
+  return { ok: true, etat: "enregistre" };
 }
 
 export async function enregistrerDestinataires(parentId: string, emails: string[]): Promise<void> {

@@ -39,19 +39,47 @@ function listeJours(jours: number[]): string {
   return enumerer(retenus.map(libelleJourSemaine));
 }
 
-export function resumeIdentifiants({
-  actif,
-  portailEmail,
-  motDePasseEnregistre,
-  verifieLe,
-  derniereErreur,
-}: {
-  actif: boolean;
-  portailEmail: string | null;
-  motDePasseEnregistre: boolean;
-  verifieLe: Date | null;
-  derniereErreur: string | null;
-}): Resume {
+/**
+ * Sous ce delai, l'association est a renouveler : le cookie de confiance n'est
+ * pas prolonge a l'usage, seul un nouveau code le remplace. Meme seuil que la
+ * relance J-5 prevue par le plan (`docs/plans/appareil-de-confiance.md`).
+ */
+export const SEUIL_RENOUVELLEMENT_MS = 5 * 24 * 3600_000;
+
+/** Une date reelle (pas un jour epingle a midi UTC), lue a Paris. */
+const jourParis = (d: Date) =>
+  d.toLocaleDateString("fr-FR", { day: "numeric", month: "long", timeZone: "Europe/Paris" });
+const heureParis = (d: Date) =>
+  d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
+
+export function resumeIdentifiants(
+  {
+    actif,
+    portailEmail,
+    motDePasseEnregistre,
+    verifieLe,
+    derniereErreur,
+    appareil,
+    association,
+  }: {
+    actif: boolean;
+    portailEmail: string | null;
+    motDePasseEnregistre: boolean;
+    verifieLe: Date | null;
+    derniereErreur: string | null;
+    appareil: { expireLe: Date | null } | null;
+    association: { demandeeLe: Date } | null;
+  },
+  maintenant = new Date(),
+): Resume {
+  // En tete : un parent qui s'inscrit n'a encore aucun identifiant, et c'est
+  // pourtant le code qu'il doit chercher.
+  if (association) {
+    return {
+      ton: "attention",
+      texte: `Code envoyé à ${heureParis(association.demandeeLe)} : saisissez-le pour terminer.`,
+    };
+  }
   if (!portailEmail || !motDePasseEnregistre) {
     return { ton: "attention", texte: "À renseigner : sans eux, rien ne peut être surveillé." };
   }
@@ -61,20 +89,36 @@ export function resumeIdentifiants({
       texte: `${portailEmail} — refusés par le portail, la surveillance est suspendue.`,
     };
   }
+  // Sans appareil le cycle n'appelle pas le portail : rien n'est surveille,
+  // c'est donc bien une chose a faire, pas une panne.
+  if (!appareil) {
+    return {
+      ton: "attention",
+      texte: `${portailEmail} — à associer : le portail demande un code de vérification.`,
+    };
+  }
+  const { expireLe } = appareil;
+  if (expireLe && expireLe.getTime() - maintenant.getTime() <= SEUIL_RENOUVELLEMENT_MS) {
+    return {
+      ton: "attention",
+      texte: `${portailEmail} — association à renouveler avant le ${jourParis(expireLe)}.`,
+    };
+  }
   // Une erreur technique du portail n'est pas une faute du parent : on la
   // signale sans la peindre en rouge, et la section reste fermee. Le detail
   // exact est a l'interieur.
   if (derniereErreur) {
     return { ton: "neutre", texte: `${portailEmail} — la dernière tentative a échoué.` };
   }
+  const jusquau = expireLe ? `, associé jusqu'au ${jourParis(expireLe)}` : "";
   if (!verifieLe) {
-    return { ton: "neutre", texte: `${portailEmail} — pas encore vérifiés.` };
+    return { ton: "neutre", texte: `${portailEmail} — pas encore vérifiés${jusquau}.` };
   }
   return {
     ton: "ok",
     texte: `${portailEmail} — connexion vérifiée le ${verifieLe.toLocaleDateString("fr-FR", {
       timeZone: "Europe/Paris",
-    })}.`,
+    })}${jusquau}.`,
   };
 }
 

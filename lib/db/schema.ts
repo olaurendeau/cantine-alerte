@@ -80,6 +80,30 @@ export const identifiantsPortail = pgTable("identifiants_portail", {
 });
 
 /**
+ * Une association en cours : la connexion au portail arretee sur la page du
+ * code 2FA, en attendant que le parent saisisse le code recu par mail.
+ *
+ * Table a part plutot que des colonnes de `identifiants_portail` : un parent
+ * qui s'inscrit n'a pas encore de ligne d'identifiants, et le mot de passe
+ * saisi ne doit y entrer qu'une fois le code accepte — un parent qui abandonne
+ * ne laisse pas d'identifiants a moitie valides.
+ *
+ * `chiffree` porte, chiffres (AAD = parent_id) : le pot a cookies de la
+ * session Laravel, le `_token` de la page du code, l'identifiant et le mot de
+ * passe saisis. Meme regime que `mdp_chiffre` : jamais charge par l'admin.
+ */
+export const associationsPortail = pgTable("associations_portail", {
+  parentId: uuid("parent_id")
+    .primaryKey()
+    .references(() => parents.id, { onDelete: "cascade" }),
+  chiffree: text("chiffree").notNull(),
+  /** Le moment ou le portail a envoye le code : sert au plafond de redemande. */
+  demandeeLe: timestamp("demandee_le", { withTimezone: true }).notNull(),
+  /** Au-dela, on ne tente plus la saisie : le code vaut 60 min, la session Laravel 120. */
+  expireLe: timestamp("expire_le", { withTimezone: true }).notNull(),
+});
+
+/**
  * Les reglages d'une famille : quand lui ecrire, et ce que l'on surveille.
  *
  * Deux referentiels de jours coexistent ici, et les confondre est le piege
