@@ -15,7 +15,12 @@ const IDENTIFIANTS_OK = {
   motDePasseEnregistre: true,
   verifieLe: new Date("2026-09-17T06:12:00Z"),
   derniereErreur: null,
+  appareil: { expireLe: new Date("2026-10-15T09:00:00Z") },
+  association: null,
 };
+
+/** Le lendemain de la verification, bien avant l'expiration de l'appareil. */
+const MAINTENANT = new Date("2026-09-18T08:00:00Z");
 
 test("enumerer se lit comme une phrase", () => {
   assert.equal(enumerer([]), "");
@@ -25,30 +30,85 @@ test("enumerer se lit comme une phrase", () => {
 });
 
 test("des identifiants verifies se resument sans avoir a deplier", () => {
-  const r = resumeIdentifiants(IDENTIFIANTS_OK);
+  const r = resumeIdentifiants(IDENTIFIANTS_OK, MAINTENANT);
   assert.equal(r.ton, "ok");
   assert.match(r.texte, /parent@exemple\.fr/);
   assert.match(r.texte, /17\/09\/2026/);
+  assert.match(r.texte, /associé jusqu'au 15 octobre/);
+});
+
+test("sans appareil de confiance, la connexion est a associer", () => {
+  // Le cycle n'appelle pas le portail sans appareil : rien n'est surveille,
+  // donc c'est au parent d'agir, et la section doit s'ouvrir.
+  const r = resumeIdentifiants({ ...IDENTIFIANTS_OK, appareil: null }, MAINTENANT);
+  assert.equal(r.ton, "attention");
+  assert.match(r.texte, /à associer/);
+});
+
+test("un code attendu prime sur tout, y compris l'absence d'identifiants", () => {
+  // Un parent qui s'inscrit n'a encore rien d'enregistre : c'est pourtant le
+  // code qu'il doit chercher, pas un formulaire a remplir.
+  const r = resumeIdentifiants(
+    {
+      ...IDENTIFIANTS_OK,
+      portailEmail: null,
+      motDePasseEnregistre: false,
+      appareil: null,
+      association: { demandeeLe: new Date("2026-09-18T06:10:00Z") },
+    },
+    MAINTENANT,
+  );
+  assert.equal(r.ton, "attention");
+  assert.match(r.texte, /Code envoyé à 08:10/);
+});
+
+test("l'association se renouvelle a cinq jours de son expiration", () => {
+  const expireLe = new Date("2026-10-15T09:00:00Z");
+  const jours = (n: number) => new Date(expireLe.getTime() - n * 24 * 3600_000);
+  const a = (maintenant: Date) =>
+    resumeIdentifiants({ ...IDENTIFIANTS_OK, appareil: { expireLe } }, maintenant);
+
+  assert.equal(a(new Date(jours(5).getTime() - 60_000)).ton, "ok");
+  assert.equal(a(jours(5)).ton, "attention");
+  assert.match(a(jours(1)).texte, /à renouveler avant le 15 octobre/);
+  // Le renouvellement l'emporte sur une panne passagere : c'est lui qui coupe
+  // le service a la date dite.
+  assert.equal(
+    resumeIdentifiants(
+      { ...IDENTIFIANTS_OK, appareil: { expireLe }, derniereErreur: "502" },
+      jours(2),
+    ).ton,
+    "attention",
+  );
+});
+
+test("un appareil sans date reste associe, sans echeance inventee", () => {
+  const r = resumeIdentifiants({ ...IDENTIFIANTS_OK, appareil: { expireLe: null } }, MAINTENANT);
+  assert.equal(r.ton, "ok");
+  assert.doesNotMatch(r.texte, /jusqu'au/);
 });
 
 test("des identifiants absents ou refuses reclament l'attention", () => {
   // Sans identifiants rien n'est surveille : c'est le seul reglage dont
   // l'absence vide le service de son objet.
   assert.equal(
-    resumeIdentifiants({ ...IDENTIFIANTS_OK, portailEmail: null, verifieLe: null }).ton,
+    resumeIdentifiants({ ...IDENTIFIANTS_OK, portailEmail: null, verifieLe: null }, MAINTENANT).ton,
     "attention",
   );
   assert.equal(
-    resumeIdentifiants({ ...IDENTIFIANTS_OK, motDePasseEnregistre: false }).ton,
+    resumeIdentifiants({ ...IDENTIFIANTS_OK, motDePasseEnregistre: false }, MAINTENANT).ton,
     "attention",
   );
-  assert.equal(resumeIdentifiants({ ...IDENTIFIANTS_OK, actif: false }).ton, "attention");
+  assert.equal(resumeIdentifiants({ ...IDENTIFIANTS_OK, actif: false }, MAINTENANT).ton, "attention");
 });
 
 test("une panne du portail ne se peint pas en rouge", () => {
   // Le compte reste actif : l'echec est technique, le parent n'a rien a
   // corriger. Le signaler oui, l'accuser non.
-  const r = resumeIdentifiants({ ...IDENTIFIANTS_OK, derniereErreur: "502 sur /api/login" });
+  const r = resumeIdentifiants(
+    { ...IDENTIFIANTS_OK, derniereErreur: "502 sur /api/login" },
+    MAINTENANT,
+  );
   assert.equal(r.ton, "neutre");
   assert.match(r.texte, /échoué/);
 });

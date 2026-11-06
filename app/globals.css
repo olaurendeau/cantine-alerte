@@ -121,6 +121,13 @@ button {
   cursor: pointer;
 }
 
+/* Le code se lit chiffre par chiffre, comme sur le mail qui le porte. */
+.champ-code {
+  max-width: 11rem;
+  letter-spacing: 0.25em;
+  font-variant-numeric: tabular-nums;
+}
+
 button.secondaire {
   background: transparent;
   border-color: var(--bord);

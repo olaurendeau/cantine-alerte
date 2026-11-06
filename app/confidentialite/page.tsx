@@ -21,6 +21,10 @@ export default function Confidentialite() {
           <li>Votre adresse email de connexion.</li>
           <li>Les adresses destinataires des rappels (souvent les deux parents).</li>
           <li>Votre identifiant et votre mot de passe du portail de la cantine.</li>
+          <li>
+            Le « cookie de confiance » que le portail délivre quand vous saisissez son code de
+            vérification, et sa date d&apos;expiration.
+          </li>
           <li>Les jours ou vous souhaitez etre rappele.</li>
           <li>
             Les jours ou vous attendez une cantine ou un periscolaire, et le cas echeant la
@@ -60,6 +64,29 @@ export default function Confidentialite() {
             le dépôt du code source
           </a>
           .
+        </p>
+      </section>
+
+      <section className="carte">
+        <h2>Le code de vérification et le cookie de confiance</h2>
+        <p>
+          Le portail envoie un code par e-mail après le mot de passe. Quand vous le saisissez dans
+          vos réglages, le service le transmet au portail en demandant de mémoriser cet appareil.
+          Le portail répond par un cookie qui dispense du code pendant 30 jours : c&apos;est lui qui
+          permet au service de se connecter chaque jour sans vous solliciter. Le code lui-même
+          n&apos;est pas conservé.
+        </p>
+        <p>
+          Avec votre mot de passe, ce cookie ouvre votre compte sans code : il est donc traité
+          exactement comme le mot de passe — chiffré avec la même clé, lié à votre compte, jamais
+          réaffiché, jamais journalisé. Il n&apos;est envoyé qu&apos;au serveur de connexion du
+          portail qui l&apos;a délivré.
+        </p>
+        <p>
+          Entre la demande du code et sa saisie, la connexion entamée (identifiants saisis
+          compris) est conservée chiffrée. Elle n&apos;est plus utilisable après 55 minutes, et
+          elle est effacée au plus tard le lendemain. Vos identifiants ne sont enregistrés
+          qu&apos;une fois le code accepté.
         </p>
       </section>
 
