@@ -66,6 +66,7 @@ node scripts/verifier.ts --verbose                      # trace chaque étape HT
 node scripts/cron.ts --date 2026-09-10                  # exécute un cycle de rappel complet
 node scripts/seed.ts --rappels 0,1,4 --matin 0,3        # crée un compte de test depuis le .env
 node scripts/associer.ts --compte moi@exemple.fr         # saisit le code 2FA, enregistre l'appareil
+node scripts/associer.ts --compte moi@exemple.fr --mot-de-passe-env  # idem, rechiffre le mdp (rotation de cle)
 node scripts/lien.ts moi@exemple.fr                     # génère un lien de connexion
 node scripts/apercu-mail.ts                             # rend les 11 variantes dans apercu/
 node scripts/tester-mail.ts moi@exemple.fr              # envoie un vrai gabarit
